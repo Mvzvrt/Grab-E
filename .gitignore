@@ -1,6 +1,10 @@
 # Ignore all
 */
+classwise_cis.json
+ensemble_results.csv
+grabcut_data.zip
 
 # But not grabcut.py
 !grabcut.py
 !testing/
+!color_space.py
