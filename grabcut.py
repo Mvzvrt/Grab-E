@@ -18,10 +18,12 @@ For each foreground class c > 1:
 Output mapping when saving:
   background -> 0, class c > 1 -> c - 1, which matches PASCAL VOC indices 0..20 when using the VOC palette.
 
-2025-09-28 Option A prep:
-- opencv_grabcut_once can now return bgdModel and fgdModel, OpenCV's 1x65 buffers, and the raw GrabCut mask if requested.
-- run_one_vs_rest can collect per-class models for export.
-- CLI supports --emit_models and --models_dir to write models to NPZ for downstream ensemble fusion.
+2025-09-30 Ensemble change:
+- Removed fused cut ensemble path and helpers, no PyMaxflow required.
+- Added majority voting ensemble over a trio of color spaces, default trio is jzazbz, jzczhz, rgb.
+- In this ensemble, we run GrabCut for each color space per class to get three binary masks, then take majority vote per pixel,
+  then perform tie resolution between classes as usual.
+- Ensemble is enabled with --enable_majority_vote, optional --ensemble_trio sets the trio.
 """
 
 from __future__ import annotations
@@ -133,8 +135,7 @@ def opencv_grabcut_once(img_feats_u8: np.ndarray,
       return_mask_states, when True with return_models, returns (bin_mask, bgdModel, fgdModel, raw_mask_states)
 
     Notes:
-      - bgdModel, fgdModel are OpenCV's 1x65 float64 buffers that store 5-comp GMMs.
-      - raw_mask_states uses the GrabCut labels {0=BGD,1=FGD,2=PR_BGD,3=PR_FGD}.
+      - bgdModel, fgdModel are OpenCV's 1x65 buffers, and the raw GrabCut mask uses labels {0=BGD,1=FGD,2=PR_BGD,3=PR_FGD}.
     """
     if img_feats_u8.dtype != np.uint8:
         img_feats_u8 = np.clip(img_feats_u8, 0, 255).astype(np.uint8)
@@ -217,6 +218,22 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
             y = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters)  # type: ignore
         fg_masks[c] = y  # binary 0 or 1
 
+    final = _combine_fg_masks_to_final(fg_masks, anns, tie_mode)
+    return (final, models_by_class) if collect_models else final
+
+
+def _combine_fg_masks_to_final(fg_masks: Dict[int, np.ndarray],
+                               anns: np.ndarray,
+                               tie_mode: str = "nearest-scribble") -> np.ndarray:
+    """
+    Combine per class binary masks into a final VOC index map, with tie handling.
+    """
+    classes = sorted(fg_masks.keys())
+    if not classes:
+        H, W = anns.shape
+        return np.zeros((H, W), dtype=np.uint8)
+
+    H, W = anns.shape
     stack = np.stack([fg_masks[c] for c in classes], axis=2)
     overlap_count = stack.sum(axis=2)
     any_overlap = (overlap_count > 1).any()
@@ -227,8 +244,9 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
         for c in classes:
             m = fg_masks[c] > 0
             final[m] = c - 1
-        return (final, models_by_class) if collect_models else final
+        return final
 
+    # nearest scribble for overlapped pixels
     overlap_mask = (overlap_count > 1)
 
     dist_to_scrib: Dict[int, np.ndarray] = {}
@@ -265,7 +283,55 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
             m = fg_masks[c] > 0
             final[m] = c - 1
 
-    return (final, models_by_class) if collect_models else final
+    return final
+
+
+# ---------- majority voting ensemble, one vs rest ----------
+
+def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
+                                      anns: np.ndarray,
+                                      trio: List[str],
+                                      gc_iters: int = 5,
+                                      tie_mode: str = "nearest-scribble") -> np.ndarray:
+    """
+    Majority voting over a trio of color spaces on the binary masks, done before class label assignment.
+
+    For each present class c > 1:
+      1. Build FG and BG seeds from anns.
+      2. Convert the RGB image to each color space in the trio.
+      3. Run GrabCut per color space to get a binary mask.
+      4. Take per pixel majority vote over the three masks, threshold sum >= 2 to 1 else 0.
+
+    After per class majority masks are obtained, combine across classes with tie handling.
+    """
+    H, W = anns.shape
+    classes = sorted([int(x) for x in np.unique(anns) if x > 1])
+    if not classes:
+        return np.zeros((H, W), dtype=np.uint8)
+
+    if len(trio) != 3:
+        raise ValueError("Ensemble trio must have exactly three color spaces")
+
+    fg_masks: Dict[int, np.ndarray] = {}
+
+    for c in classes:
+        seeds_fg = (anns == c)
+        seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
+
+        votes = []
+        for cs in trio:
+            feats_cs = convert_color_space(img_rgb_u8, cs)
+            y_bin = opencv_grabcut_once(
+                feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=int(gc_iters)
+            )
+            votes.append(y_bin.astype(np.uint8))
+
+        stack = np.stack(votes, axis=2)
+        y_majority = (stack.sum(axis=2) >= 2).astype(np.uint8)
+        fg_masks[c] = y_majority
+
+    final = _combine_fg_masks_to_final(fg_masks, anns, tie_mode)
+    return final
 
 
 # ---------- model I O helpers ----------
@@ -316,7 +382,9 @@ def _process_single_image(ann_path: str,
                           gc_iters: int,
                           tie_mode: str,
                           emit_models: bool,
-                          models_dir: Optional[str]) -> Dict[str, object]:
+                          models_dir: Optional[str],
+                          enable_majority_vote: bool,
+                          ensemble_trio: str) -> Dict[str, object]:
     """Worker function to process a single image, safe for ProcessPoolExecutor."""
     ann_p = Path(ann_path)
     images_dir_p = Path(images_dir)
@@ -329,264 +397,53 @@ def _process_single_image(ann_path: str,
 
     t0 = perf_counter()
     img_rgb = load_img(img_path)
-    img_feats = convert_color_space(img_rgb, color_space)
-
     anns = load_anns(ann_p)
-    if anns.shape[:2] != img_feats.shape[:2]:
+
+    # resize anns to match image if needed
+    if anns.shape[:2] != img_rgb.shape[:2]:
         anns = cv.resize(anns.astype(np.int32),
-                         (img_feats.shape[1], img_feats.shape[0]),
+                         (img_rgb.shape[1], img_rgb.shape[0]),
                          interpolation=cv.INTER_NEAREST)
 
-    if emit_models:
-        pred, models_by_class = run_one_vs_rest(img_feats, anns, gc_iters=int(gc_iters), tie_mode=tie_mode, collect_models=True)  # type: ignore
-        models_out_dir = Path(models_dir) if models_dir else (out_dir_p / "models")
-        written = save_models_npz(
-            base=base,
-            color_space=color_space,
-            out_dir=models_out_dir,
-            models_by_class=models_by_class,
-            meta={
-                "base": base,
-                "color_space": color_space,
-                "gc_iters": int(gc_iters),
-                "tie_mode": tie_mode,
-            },
+    # run either majority ensemble or single space
+    if enable_majority_vote:
+        trio = [s.strip() for s in (ensemble_trio if ensemble_trio else "jzazbz,jzczhz,rgb").split(",")]
+        if len(trio) != 3:
+            return {"ok": False, "base": base, "reason": "ensemble_trio must have exactly 3 entries"}
+        pred = run_one_vs_rest_majority_ensemble(
+            img_rgb_u8=img_rgb,
+            anns=anns,
+            trio=trio,
+            gc_iters=int(gc_iters),
+            tie_mode=tie_mode
         )
+        written = []  # no model export in ensemble path
     else:
-        pred = run_one_vs_rest(img_feats, anns, gc_iters=int(gc_iters), tie_mode=tie_mode)  # type: ignore
-        written = []
+        img_feats = convert_color_space(img_rgb, color_space)
+        if emit_models:
+            pred, models_by_class = run_one_vs_rest(img_feats, anns, gc_iters=int(gc_iters), tie_mode=tie_mode, collect_models=True)  # type: ignore
+            models_out_dir = Path(models_dir) if models_dir else (out_dir_p / "models")
+            written = save_models_npz(
+                base=base,
+                color_space=color_space,
+                out_dir=models_out_dir,
+                models_by_class=models_by_class,
+                meta={
+                    "base": base,
+                    "color_space": color_space,
+                    "gc_iters": int(gc_iters),
+                    "tie_mode": tie_mode,
+                },
+            )
+        else:
+            pred = run_one_vs_rest(img_feats, anns, gc_iters=int(gc_iters), tie_mode=tie_mode)  # type: ignore
+            written = []
 
     out_path = out_dir_p / f"{base}_index.png"
     save_indexed_png(pred, str(out_path))
 
     dt = (perf_counter() - t0) * 1000.0
     return {"ok": True, "base": base, "ms": dt, "out": out_path.name, "models_written": written}
-
-
-# ---------- Ensemble Option A, fused unaries and single cut ----------
-
-def _parse_opencv_gmm_5_from_buf(buf: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    [Inference] Parse OpenCV bgdModel and fgdModel 1 by 65 buffer into
-      weights, shape 5
-      means, shape 5 by 3
-      covariances, shape 5 by 3 by 3
-    Assumes layout, [w, m0, m1, m2, 3 by 3 covariance flattened row major] per component.
-    Returns weights clipped and normalized.
-    """
-    b = np.asarray(buf, dtype=np.float64).reshape(-1)
-    if b.size != 65:
-        raise ValueError(f"Unexpected model buffer length, expected 65, got {b.size}")
-    comps = []
-    off = 0
-    for _ in range(5):
-        w = b[off]; off += 1
-        m = b[off:off+3]; off += 3
-        C = b[off:off+9].reshape(3, 3); off += 9
-        comps.append((w, m, C))
-    weights = np.array([c[0] for c in comps], dtype=np.float64)
-    means = np.stack([c[1] for c in comps], axis=0).astype(np.float64)
-    covs = np.stack([c[2] for c in comps], axis=0).astype(np.float64)
-
-    for k in range(5):
-        covs[k].flat[::4] += 1e-6
-
-    weights = np.clip(weights, 0.0, np.inf)
-    s = weights.sum()
-    if s <= 0:
-        weights = np.ones(5, dtype=np.float64) / 5.0
-    else:
-        weights /= s
-    return weights, means, covs
-
-
-def _logpdf_gmm_full(X: np.ndarray,
-                     w: np.ndarray, mu: np.ndarray, Sigma: np.ndarray) -> np.ndarray:
-    """
-    Compute log sum over i of w_i times N(x | mu_i, Sigma_i) for 3D features.
-    Input X shape H, W, 3, returns H, W float64.
-    """
-    Xf = X.astype(np.float64)
-    H, W, _ = Xf.shape
-    X2 = Xf.reshape(-1, 3)
-
-    K = w.shape[0]
-    logps = np.empty((X2.shape[0], K), dtype=np.float64)
-
-    for k in range(K):
-        Sk = Sigma[k]
-        muk = mu[k]
-        try:
-            L = np.linalg.cholesky(Sk)
-        except np.linalg.LinAlgError:
-            vals, vecs = np.linalg.eigh(Sk)
-            vals = np.clip(vals, 1e-6, None)
-            L = vecs @ np.diag(np.sqrt(vals))
-        diff = X2 - muk
-        y = np.linalg.solve(L, diff.T)
-        maha2 = np.sum(y * y, axis=0)
-        logdet = 2.0 * np.sum(np.log(np.diag(L)))
-        logN = -0.5 * (3 * np.log(2.0 * np.pi) + logdet + maha2)
-        logps[:, k] = np.log(max(w[k], 1e-12)) + logN
-
-    m = np.max(logps, axis=1, keepdims=True)
-    ll = m + np.log(np.sum(np.exp(logps - m), axis=1, keepdims=True))
-    return ll.reshape(H, W)
-
-
-def _compute_beta_gamma_rgb(img_rgb_u8: np.ndarray, gamma: float = 50.0) -> Tuple[float, float]:
-    """
-    Compute beta following GrabCut idea, beta equals 1 divided by (2 times mean squared color diff) over 8 neighbors.
-    Returns beta and gamma.
-    """
-    I = img_rgb_u8.astype(np.float64)
-    H, W, _ = I.shape
-    diffs = []
-    for dy, dx in [(0, 1), (1, 0), (1, 1), (-1, 1)]:
-        J = I[max(0, dy):H + min(0, dy), max(0, dx):W + min(0, dx), :]
-        K = I[max(0, -dy):H + min(0, -dy), max(0, -dx):W + min(0, -dx), :]
-        d = (J - K)
-        diffs.append((d * d).sum(axis=2))
-    diffs_all = np.concatenate([d.ravel() for d in diffs])
-    m = float(np.mean(diffs_all)) if diffs_all.size else 1.0
-    beta = 1.0 / (2.0 * max(m, 1e-6))
-    return beta, float(gamma)
-
-
-def _build_pairwise_edges(img_rgb_u8: np.ndarray,
-                          beta: float, gamma: float) -> List[Tuple[int, int, float, float]]:
-    """
-    Build symmetric pairwise Potts edges over 8 neighbors.
-    Returns list of (p, q, w, w) edges for pymaxflow add_edge.
-    """
-    I = img_rgb_u8.astype(np.float64)
-    H, W, _ = I.shape
-
-    def idx(y, x):
-        return y * W + x
-
-    edges = []
-    for y in range(H):
-        for x in range(W):
-            p = idx(y, x)
-            if x + 1 < W:
-                d = I[y, x] - I[y, x + 1]
-                w = gamma * np.exp(-beta * float(d @ d)) / 1.0
-                edges.append((p, idx(y, x + 1), w, w))
-            if y + 1 < H:
-                d = I[y, x] - I[y + 1, x]
-                w = gamma * np.exp(-beta * float(d @ d)) / 1.0
-                edges.append((p, idx(y + 1, x), w, w))
-            if x + 1 < W and y + 1 < H:
-                d = I[y, x] - I[y + 1, x + 1]
-                w = gamma * np.exp(-beta * float(d @ d)) / np.sqrt(2.0)
-                edges.append((p, idx(y + 1, x + 1), w, w))
-            if x - 1 >= 0 and y + 1 < H:
-                d = I[y, x] - I[y + 1, x - 1]
-                w = gamma * np.exp(-beta * float(d @ d)) / np.sqrt(2.0)
-                edges.append((p, idx(y + 1, x - 1), w, w))
-    return edges
-
-
-def _calibrate_margin_on_seeds(margin: np.ndarray,
-                               seeds_bg: np.ndarray,
-                               seeds_fg: np.ndarray) -> np.ndarray:
-    """
-    Simple z score calibration using seed pixels.
-    """
-    S = seeds_bg | seeds_fg
-    if np.any(S):
-        m = float(np.mean(margin[S]))
-        s = float(np.std(margin[S])) or 1.0
-        return (margin - m) / s
-    m = float(np.mean(margin))
-    s = float(np.std(margin)) or 1.0
-    return (margin - m) / s
-
-
-def _fused_unaries_for_class(img_rgb_u8: np.ndarray,
-                             trio: List[str],
-                             models_fg: List[np.ndarray],
-                             models_bg: List[np.ndarray],
-                             seeds_bg: np.ndarray,
-                             seeds_fg: np.ndarray,
-                             alpha_mode: str = "equal",
-                             alpha_weights: Optional[List[float]] = None
-                             ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Compute fused D_F and D_B from per space log likelihood margins.
-    Returns D_F and D_B as float64 arrays H by W.
-    """
-    H, W, _ = img_rgb_u8.shape
-    assert len(trio) == len(models_fg) == len(models_bg) == 3
-
-    margins = []
-    for k, cs in enumerate(trio):
-        feats = convert_color_space(img_rgb_u8, cs)
-        w_f, mu_f, S_f = _parse_opencv_gmm_5_from_buf(models_fg[k])
-        w_b, mu_b, S_b = _parse_opencv_gmm_5_from_buf(models_bg[k])
-        ll_f = _logpdf_gmm_full(feats, w_f, mu_f, S_f)
-        ll_b = _logpdf_gmm_full(feats, w_b, mu_b, S_b)
-        m = ll_f - ll_b
-        m = _calibrate_margin_on_seeds(m, seeds_bg, seeds_fg)
-        margins.append(m)
-
-    margins = np.stack(margins, axis=2)
-
-    if alpha_mode == "equal" or alpha_weights is None:
-        alphas = np.ones(3, dtype=np.float64) / 3.0
-    else:
-        aw = np.array(alpha_weights, dtype=np.float64)
-        if aw.shape != (3,):
-            raise ValueError("alpha_weights must have length 3")
-        s = float(aw.sum())
-        alphas = aw / s if s > 0 else np.ones(3, dtype=np.float64) / 3.0
-
-    M = np.tensordot(margins, alphas, axes=([2], [0]))
-    DF = np.clip(-M, 0.0, None)
-    DB = np.clip(M, 0.0, None)
-
-    scale = float(np.mean(DF + DB)) or 1.0
-    DF = DF / scale
-    DB = DB / scale
-
-    BIG = 1e6
-    DB = DB + (seeds_fg.astype(np.float64) * BIG)
-    DF = DF + (seeds_bg.astype(np.float64) * BIG)
-
-    return DF, DB
-
-
-def _run_fused_cut_for_class(img_rgb_u8: np.ndarray,
-                             DF: np.ndarray, DB: np.ndarray,
-                             lambda_smooth: float = 1.0,
-                             pairwise_gamma: float = 50.0) -> np.ndarray:
-    """
-    Build an s t graph and run a single cut using PyMaxflow.
-    Returns binary mask 0 or 1 for BG or FG.
-    """
-    try:
-        import maxflow
-    except Exception as e:
-        raise RuntimeError("PyMaxflow is required for fused cut. Please install PyMaxflow.") from e
-
-    H, W, _ = img_rgb_u8.shape
-    N = H * W
-
-    g = maxflow.Graph[float](N, N * 4)
-    nodes = g.add_grid_nodes((H, W))
-
-    g.add_grid_tedges(nodes, DF, DB)
-
-    beta, gamma = _compute_beta_gamma_rgb(img_rgb_u8, gamma=pairwise_gamma)
-    edges = _build_pairwise_edges(img_rgb_u8, beta=beta, gamma=lambda_smooth * gamma)
-    for p, q, w1, w2 in edges:
-        g.add_edge(p, q, w1, w2)
-
-    g.maxflow()
-    seg = g.get_grid_segments(nodes)
-    y = (~seg).astype(np.uint8)
-    return y
 
 
 # ---------- CLI ----------
@@ -610,28 +467,16 @@ def parse_args(argv=None):
                         "oklab", "oklch", "jzazbz", "jzczhz",
                         "ictcp_pq", "xyz", "ycbcr_bt709", "srgb_linear"
                     ],
-                    help="Input feature color space. Modern options include oklab, jzazbz, ictcp_pq. "
-                         "Legacy include rgb, cielab. Default is rgb.")
+                    help="Input feature color space for the single space baseline path. Default is rgb.")
 
-    ap.add_argument("--ensemble_trio", type=str, default="",
-                    help="Comma separated trio for fused unaries, example jzazbz,jzczhz,rgb. Enables ensemble fused cut when set.")
-    ap.add_argument("--ensemble_mode", type=str, default="",
-                    choices=["", "fused-cut"],
-                    help="Set to fused cut to run Option A ensemble using learned models per space, then one final cut.")
-    ap.add_argument("--gc_iters_models", type=int, default=5,
-                    help="Iterations per space to learn models for ensemble.")
-    ap.add_argument("--alpha_mode", type=str, default="equal",
-                    choices=["equal", "weights"],
-                    help="How to set trio weights, equal or provide --alpha_weights.")
-    ap.add_argument("--alpha_weights", type=str, default="",
-                    help="Comma separated weights for the trio, example 0.4,0.3,0.3, used when --alpha_mode equals weights.")
-    ap.add_argument("--lambda_smooth", type=float, default=1.0,
-                    help="Pairwise strength multiplier for fused cut.")
-    ap.add_argument("--pairwise_gamma", type=float, default=50.0,
-                    help="Gamma parameter for pairwise edge weighting.")
+    # majority voting ensemble controls
+    ap.add_argument("--enable_majority_vote", action="store_true",
+                    help="Enable majority voting ensemble across a trio of color spaces for binary masks prior to class assignment.")
+    ap.add_argument("--ensemble_trio", type=str, default="jzazbz,jzczhz,rgb",
+                    help="Comma separated trio for majority voting, default jzazbz,jzczhz,rgb.")
 
     ap.add_argument("--emit_models", action="store_true",
-                    help="When set, save per class bgdModel and fgdModel NPZ files for downstream ensemble fusion.")
+                    help="When set, save per class bgdModel and fgdModel NPZ files for the single space path.")
     ap.add_argument("--models_dir", type=str, default="",
                     help="Optional output directory for NPZ model files, defaults to output_dir slash models")
 
@@ -649,7 +494,7 @@ def main(argv=None):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     models_out_dir = Path(args.models_dir) if args.models_dir else (out_dir / "models")
-    if args.emit_models:
+    if args.emit_models and not args.enable_majority_vote:
         models_out_dir.mkdir(parents=True, exist_ok=True)
 
     ann_files = sorted([p for p in anns_dir.iterdir()
@@ -675,7 +520,8 @@ def main(argv=None):
                     _process_single_image,
                     str(ann_path), str(images_dir), str(out_dir),
                     str(args.color_space), int(args.gc_iters), str(args.tie_mode),
-                    bool(args.emit_models), str(models_out_dir) if args.emit_models else ""
+                    bool(args.emit_models), str(models_out_dir) if args.emit_models and not args.enable_majority_vote else "",
+                    bool(args.enable_majority_vote), str(args.ensemble_trio)
                 ): ann_path for ann_path in ann_files
             }
             for fut in tqdm(as_completed(futures), total=len(futures), unit="img", desc="GrabCut[par]"):
@@ -709,102 +555,27 @@ def main(argv=None):
             try:
                 t0 = perf_counter()
                 img_rgb = load_img(img_path)
-                img_feats = convert_color_space(img_rgb, args.color_space)
-
                 anns = load_anns(ann_path)
-                if anns.shape[:2] != img_feats.shape[:2]:
+
+                if anns.shape[:2] != img_rgb.shape[:2]:
                     anns = cv.resize(anns.astype(np.int32),
-                                     (img_feats.shape[1], img_feats.shape[0]),
+                                     (img_rgb.shape[1], img_rgb.shape[0]),
                                      interpolation=cv.INTER_NEAREST)
 
                 written = []
-                if args.ensemble_mode == "fused-cut" and args.ensemble_trio:
-                    trio = [s.strip() for s in args.ensemble_trio.split(",")]
+                if args.enable_majority_vote:
+                    trio = [s.strip() for s in (args.ensemble_trio if args.ensemble_trio else "jzazbz,jzczhz,rgb").split(",")]
                     if len(trio) != 3:
                         raise ValueError("ensemble_trio must have exactly three comma separated color spaces")
-                    classes = sorted([int(x) for x in np.unique(anns) if int(x) > 1])
-                    H, W, _ = img_rgb.shape
-                    fg_masks: Dict[int, np.ndarray] = {}
-                    for c in classes:
-                        seeds_fg = (anns == c)
-                        seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
-
-                        models_fg: List[np.ndarray] = []
-                        models_bg: List[np.ndarray] = []
-                        for cs in trio:
-                            feats_cs = convert_color_space(img_rgb, cs)
-                            _, bgm, fgm = opencv_grabcut_once(
-                                feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg,
-                                iters=int(args.gc_iters_models), return_models=True
-                            )
-                            models_fg.append(fgm)
-                            models_bg.append(bgm)
-
-                        if args.alpha_mode == "weights" and args.alpha_weights:
-                            alphas = [float(x) for x in args.alpha_weights.split(",")]
-                        else:
-                            alphas = None
-
-                        DF, DB = _fused_unaries_for_class(
-                            img_rgb_u8=img_rgb,
-                            trio=trio,
-                            models_fg=models_fg,
-                            models_bg=models_bg,
-                            seeds_bg=seeds_bg,
-                            seeds_fg=seeds_fg,
-                            alpha_mode=args.alpha_mode,
-                            alpha_weights=alphas
-                        )
-                        y_bin = _run_fused_cut_for_class(
-                            img_rgb_u8=img_rgb,
-                            DF=DF, DB=DB,
-                            lambda_smooth=float(args.lambda_smooth),
-                            pairwise_gamma=float(args.pairwise_gamma)
-                        )
-                        fg_masks[c] = y_bin
-
-                    stack = np.stack([fg_masks[c] for c in classes], axis=2)
-                    overlap_count = stack.sum(axis=2)
-                    final = np.zeros((H, W), dtype=np.uint8)
-
-                    if not (overlap_count > 1).any() or args.tie_mode != "nearest-scribble":
-                        for c in classes:
-                            m = fg_masks[c] > 0
-                            final[m] = c - 1
-                    else:
-                        overlap_mask = (overlap_count > 1)
-                        dist_to_scrib: Dict[int, np.ndarray] = {}
-                        classes_for_dt: List[int] = []
-                        for c in classes:
-                            if np.any(fg_masks[c] & overlap_mask):
-                                s = (anns == c).astype(np.uint8)
-                                if np.any(s):
-                                    ones = np.ones_like(s, dtype=np.uint8)
-                                    ones[s > 0] = 0
-                                    d = cv.distanceTransform(ones, cv.DIST_L2, 3).astype(np.float32)
-                                else:
-                                    d = np.full(s.shape, 1e6, dtype=np.float32)
-                                dist_to_scrib[c] = d
-                                classes_for_dt.append(c)
-                        if classes_for_dt:
-                            INF = 1e9
-                            dstack = np.stack(
-                                [np.where(fg_masks[c] > 0, dist_to_scrib[c], INF) for c in classes_for_dt],
-                                axis=2
-                            )
-                            arg = np.argmin(dstack, axis=2)
-                            for c in classes:
-                                m = (fg_masks[c] > 0) & (~overlap_mask)
-                                final[m] = c - 1
-                            for idx, c in enumerate(classes_for_dt):
-                                m = overlap_mask & (arg == idx)
-                                final[m] = c - 1
-                        else:
-                            for c in classes:
-                                m = fg_masks[c] > 0
-                                final[m] = c - 1
-                    pred = final
+                    pred = run_one_vs_rest_majority_ensemble(
+                        img_rgb_u8=img_rgb,
+                        anns=anns,
+                        trio=trio,
+                        gc_iters=int(args.gc_iters),
+                        tie_mode=args.tie_mode
+                    )
                 else:
+                    img_feats = convert_color_space(img_rgb, args.color_space)
                     if args.emit_models:
                         pred, models_by_class = run_one_vs_rest(img_feats, anns, gc_iters=int(args.gc_iters), tie_mode=args.tie_mode, collect_models=True)  # type: ignore
                         written = save_models_npz(
@@ -855,9 +626,11 @@ def main(argv=None):
             "gc_iters": int(args.gc_iters),
             "tie_mode": args.tie_mode,
             "color_space": args.color_space,
+            "enable_majority_vote": bool(args.enable_majority_vote),
+            "ensemble_trio": str(args.ensemble_trio),
             "parallel": bool(args.parallel),
-            "emit_models": bool(args.emit_models),
-            "models_dir": str(models_out_dir) if args.emit_models else None,
+            "emit_models": bool(args.emit_models) and not bool(args.enable_majority_vote),
+            "models_dir": str(models_out_dir) if args.emit_models and not args.enable_majority_vote else None,
             "max_workers": int(args.max_workers if args.max_workers else (os.cpu_count() or 4) if args.parallel else 0),
         },
         "timing_ms_avg": (float(np.mean(times_ms)) if times_ms else None)
