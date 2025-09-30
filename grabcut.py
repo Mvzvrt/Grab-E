@@ -24,6 +24,14 @@ Output mapping when saving:
 - In this ensemble, we run GrabCut for each color space per class to get three binary masks, then take majority vote per pixel,
   then perform tie resolution between classes as usual.
 - Ensemble is enabled with --enable_majority_vote, optional --ensemble_trio sets the trio.
+
+2025-09-30 Intra image parallelization change:
+- Added intra image parallelization for the trio color spaces when using the majority voting ensemble.
+- New flags:
+    --ensemble_trio_parallel, choices auto, on, off. Default auto.
+      auto, when args.parallel is False, parallelize the three color spaces for a single image, when args.parallel is True, do them sequentially to avoid oversubscription.
+    --ensemble_trio_workers, integer, default 0 which means use len(trio) workers.
+- Implementation uses ThreadPoolExecutor to avoid nested process spawning when batch mode is also using processes.
 """
 
 from __future__ import annotations
@@ -34,7 +42,7 @@ import warnings
 from pathlib import Path
 from time import perf_counter
 from typing import Dict, Optional, List, Tuple
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 import os
 
 import numpy as np
@@ -292,7 +300,9 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
                                       anns: np.ndarray,
                                       trio: List[str],
                                       gc_iters: int = 5,
-                                      tie_mode: str = "nearest-scribble") -> np.ndarray:
+                                      tie_mode: str = "nearest-scribble",
+                                      trio_parallel: bool = False,
+                                      trio_workers: int = 0) -> np.ndarray:
     """
     Majority voting over a trio of color spaces on the binary masks, done before class label assignment.
 
@@ -302,6 +312,8 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
       3. Run GrabCut per color space to get a binary mask.
       4. Take per pixel majority vote over the three masks, threshold sum >= 2 to 1 else 0.
 
+    When trio_parallel is True, the three color space runs are executed in parallel threads per class.
+    trio_workers, if 0, defaults to len(trio).
     After per class majority masks are obtained, combine across classes with tie handling.
     """
     H, W = anns.shape
@@ -312,19 +324,33 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
     if len(trio) != 3:
         raise ValueError("Ensemble trio must have exactly three color spaces")
 
+    workers = trio_workers if trio_workers and trio_workers > 0 else len(trio)
+
     fg_masks: Dict[int, np.ndarray] = {}
 
     for c in classes:
         seeds_fg = (anns == c)
         seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
 
-        votes = []
-        for cs in trio:
-            feats_cs = convert_color_space(img_rgb_u8, cs)
-            y_bin = opencv_grabcut_once(
-                feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=int(gc_iters)
-            )
-            votes.append(y_bin.astype(np.uint8))
+        if trio_parallel:
+            def _run(cs: str) -> np.ndarray:
+                feats_cs = convert_color_space(img_rgb_u8, cs)
+                y_bin = opencv_grabcut_once(
+                    feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=int(gc_iters)
+                )
+                return y_bin.astype(np.uint8)
+
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futures = [ex.submit(_run, cs) for cs in trio]
+                votes = [f.result() for f in futures]
+        else:
+            votes = []
+            for cs in trio:
+                feats_cs = convert_color_space(img_rgb_u8, cs)
+                y_bin = opencv_grabcut_once(
+                    feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=int(gc_iters)
+                )
+                votes.append(y_bin.astype(np.uint8))
 
         stack = np.stack(votes, axis=2)
         y_majority = (stack.sum(axis=2) >= 2).astype(np.uint8)
@@ -384,7 +410,9 @@ def _process_single_image(ann_path: str,
                           emit_models: bool,
                           models_dir: Optional[str],
                           enable_majority_vote: bool,
-                          ensemble_trio: str) -> Dict[str, object]:
+                          ensemble_trio: str,
+                          trio_parallel: bool,
+                          trio_workers: int) -> Dict[str, object]:
     """Worker function to process a single image, safe for ProcessPoolExecutor."""
     ann_p = Path(ann_path)
     images_dir_p = Path(images_dir)
@@ -415,7 +443,9 @@ def _process_single_image(ann_path: str,
             anns=anns,
             trio=trio,
             gc_iters=int(gc_iters),
-            tie_mode=tie_mode
+            tie_mode=tie_mode,
+            trio_parallel=bool(trio_parallel),
+            trio_workers=int(trio_workers) if trio_workers else 0
         )
         written = []  # no model export in ensemble path
     else:
@@ -474,6 +504,10 @@ def parse_args(argv=None):
                     help="Enable majority voting ensemble across a trio of color spaces for binary masks prior to class assignment.")
     ap.add_argument("--ensemble_trio", type=str, default="jzazbz,jzczhz,rgb",
                     help="Comma separated trio for majority voting, default jzazbz,jzczhz,rgb.")
+    ap.add_argument("--ensemble_trio_parallel", type=str, default="auto", choices=["auto", "on", "off"],
+                    help="Intra image trio parallelization. auto, parallelize trio when not running batch parallel, off in batch. on, always parallelize. off, never parallelize.")
+    ap.add_argument("--ensemble_trio_workers", type=int, default=0,
+                    help="Workers for intra image trio parallelization with threads, 0 means len(trio)")
 
     ap.add_argument("--emit_models", action="store_true",
                     help="When set, save per class bgdModel and fgdModel NPZ files for the single space path.")
@@ -512,6 +546,15 @@ def main(argv=None):
     processed, skipped = 0, 0
     times_ms: List[float] = []
 
+    # Decide intra image trio parallelization for this run
+    if args.ensemble_trio_parallel == "on":
+        trio_parallel_flag = True
+    elif args.ensemble_trio_parallel == "off":
+        trio_parallel_flag = False
+    else:
+        # auto
+        trio_parallel_flag = not bool(args.parallel)
+
     if args.parallel:
         max_workers = args.max_workers if args.max_workers and args.max_workers > 0 else (os.cpu_count() or 4)
         with ProcessPoolExecutor(max_workers=max_workers) as ex:
@@ -521,7 +564,9 @@ def main(argv=None):
                     str(ann_path), str(images_dir), str(out_dir),
                     str(args.color_space), int(args.gc_iters), str(args.tie_mode),
                     bool(args.emit_models), str(models_out_dir) if args.emit_models and not args.enable_majority_vote else "",
-                    bool(args.enable_majority_vote), str(args.ensemble_trio)
+                    bool(args.enable_majority_vote), str(args.ensemble_trio),
+                    bool(trio_parallel_flag) and bool(args.enable_majority_vote),  # only matters for ensemble path
+                    int(args.ensemble_trio_workers)
                 ): ann_path for ann_path in ann_files
             }
             for fut in tqdm(as_completed(futures), total=len(futures), unit="img", desc="GrabCut[par]"):
@@ -572,7 +617,9 @@ def main(argv=None):
                         anns=anns,
                         trio=trio,
                         gc_iters=int(args.gc_iters),
-                        tie_mode=args.tie_mode
+                        tie_mode=args.tie_mode,
+                        trio_parallel=bool(trio_parallel_flag),
+                        trio_workers=int(args.ensemble_trio_workers)
                     )
                 else:
                     img_feats = convert_color_space(img_rgb, args.color_space)
@@ -628,6 +675,8 @@ def main(argv=None):
             "color_space": args.color_space,
             "enable_majority_vote": bool(args.enable_majority_vote),
             "ensemble_trio": str(args.ensemble_trio),
+            "ensemble_trio_parallel": str(args.ensemble_trio_parallel),
+            "ensemble_trio_workers": int(args.ensemble_trio_workers),
             "parallel": bool(args.parallel),
             "emit_models": bool(args.emit_models) and not bool(args.enable_majority_vote),
             "models_dir": str(models_out_dir) if args.emit_models and not args.enable_majority_vote else None,
