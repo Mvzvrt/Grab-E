@@ -497,7 +497,6 @@ def main(argv=None):
                     _process_single_image,
                     str(ann_path), str(images_dir), str(out_dir),
                     str(args.color_space), int(args.gc_iters), str(args.tie_mode),
-                    bool(args.emit_models), str(models_out_dir) if args.emit_models and not args.enable_majority_vote else "",
                     bool(args.enable_majority_vote), str(args.ensemble_trio),
                     bool(trio_parallel_flag) and bool(args.enable_majority_vote),  # only matters for ensemble path
                     int(args.ensemble_trio_workers)
