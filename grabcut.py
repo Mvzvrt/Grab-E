@@ -32,6 +32,22 @@ Output mapping when saving:
       auto, when args.parallel is False, parallelize the three color spaces for a single image, when args.parallel is True, do them sequentially to avoid oversubscription.
     --ensemble_trio_workers, integer, default 0 which means use len(trio) workers.
 - Implementation uses ThreadPoolExecutor to avoid nested process spawning when batch mode is also using processes.
+
+2025-10-03 Dynamic single cut change:
+- Added an automatic, single pass, dynamic image cut, either vertical or horizontal, based on which orientation keeps better scribble coverage across halves.
+- Each half is segmented independently with the chosen pipeline, results are then merged back to the original full resolution prediction.
+- New flags:
+    --enable_dynamic_cut, default true, turns the feature on or off.
+    --dynamic_cut_strict_bg, default true, requires background scribbles in both halves to consider an orientation valid.
+    --dynamic_cut_require_fg, default true, requires at least some foreground scribbles in both halves.
+    --dynamic_cut_verbose, default false, prints decision details per image.
+- Decision rule in short:
+    1) For vertical and horizontal, split anns into two halves.
+    2) Check validity constraints as configured.
+    3) Compute coverage score per half as the number of present labels from the set {background} union {all foreground classes present overall}, using presence by boolean.
+    4) Orientation score is min(coverage_left, coverage_right) to favor balanced halves.
+       Tie breaker is sum coverage, then total labeled pixels across both halves.
+    5) If neither orientation is valid, skip cutting and process the full image.
 """
 
 from __future__ import annotations
@@ -121,7 +137,7 @@ def base_from_ann_name(name: str) -> str:
     return name
 
 
-# ---------- color-space helpers moved to color_space.py ----------
+# ---------- color space helpers moved to color_space.py ----------
 from color_space import convert_color_space, get_color_converter  # type: ignore
 
 
@@ -143,7 +159,7 @@ def opencv_grabcut_once(img_feats_u8: np.ndarray,
       return_mask_states, when True with return_models, returns (bin_mask, bgdModel, fgdModel, raw_mask_states)
 
     Notes:
-      - bgdModel, fgdModel are OpenCV's 1x65 buffers, and the raw GrabCut mask uses labels {0=BGD,1=FGD,2=PR_BGD,3=PR_FGD}.
+      bgdModel, fgdModel are OpenCV 1x65 buffers, and the raw GrabCut mask uses labels {0=BGD,1=FGD,2=PR_BGD,3=PR_FGD}.
     """
     if img_feats_u8.dtype != np.uint8:
         img_feats_u8 = np.clip(img_feats_u8, 0, 255).astype(np.uint8)
@@ -360,6 +376,170 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
     return final
 
 
+# ---------- dynamic single cut helpers ----------
+
+def _split_indices(H: int, W: int, orientation: str) -> Tuple[slice, slice]:
+    if orientation == "vertical":
+        mid = W // 2
+        left = slice(0, mid)
+        right = slice(mid, W)
+        return left, right
+    elif orientation == "horizontal":
+        mid = H // 2
+        top = slice(0, mid)
+        bottom = slice(mid, H)
+        return top, bottom
+    else:
+        raise ValueError("orientation must be vertical or horizontal")
+
+
+def split_image_and_anns(img_rgb: np.ndarray, anns: np.ndarray, orientation: str):
+    H, W, _ = img_rgb.shape
+    s1, s2 = _split_indices(H, W, orientation)
+
+    if orientation == "vertical":
+        img1 = img_rgb[:, s1, :]
+        img2 = img_rgb[:, s2, :]
+        a1 = anns[:, s1]
+        a2 = anns[:, s2]
+    else:
+        img1 = img_rgb[s1, :, :]
+        img2 = img_rgb[s2, :, :]
+        a1 = anns[s1, :]
+        a2 = anns[s2, :]
+
+    return (img1, a1), (img2, a2)
+
+
+def merge_masks(mask1: np.ndarray, mask2: np.ndarray, orientation: str, H: int, W: int) -> np.ndarray:
+    if orientation == "vertical":
+        return np.concatenate([mask1, mask2], axis=1)
+    else:
+        return np.concatenate([mask1, mask2], axis=0)
+
+
+def _coverage_stats(anns: np.ndarray, labels_considered: List[int]) -> Dict[str, object]:
+    present = {}
+    for lab in labels_considered:
+        present[lab] = bool(np.any(anns == lab))
+    total_present = sum(1 for v in present.values() if v)
+    total_labeled_pixels = int(np.count_nonzero(anns > 0))
+    return {"present": present, "count_labels_present": total_present, "labeled_pixels": total_labeled_pixels}
+
+
+def decide_cut_orientation(anns: np.ndarray,
+                           strict_bg: bool = True,
+                           require_fg: bool = True) -> str:
+    H, W = anns.shape
+    fg_classes_all = sorted([int(x) for x in np.unique(anns) if x > 1])
+    labels_considered = [1] + fg_classes_all  # background plus all foreground classes present overall
+
+    if len(labels_considered) <= 1:
+        return "none"  # no meaningful foreground scribbles present
+
+    def eval_orientation(orientation: str) -> Tuple[bool, int, int, int]:
+        (img1, a1), (img2, a2) = split_image_and_anns(np.zeros((H, W, 3), np.uint8), anns, orientation)
+        s1 = _coverage_stats(a1, labels_considered)
+        s2 = _coverage_stats(a2, labels_considered)
+
+        bg_ok = (s1["present"][1] and s2["present"][1]) if strict_bg else True
+        fg_ok = True
+        if require_fg:
+            fg_ok = (np.any(np.isin(a1, fg_classes_all)) and np.any(np.isin(a2, fg_classes_all)))
+
+        valid = bg_ok and fg_ok
+        min_cov = min(int(s1["count_labels_present"]), int(s2["count_labels_present"]))
+        sum_cov = int(s1["count_labels_present"]) + int(s2["count_labels_present"])
+        total_lab = int(s1["labeled_pixels"]) + int(s2["labeled_pixels"])
+        return valid, min_cov, sum_cov, total_lab
+
+
+    v_valid, v_min, v_sum, v_lab = eval_orientation("vertical")
+    h_valid, h_min, h_sum, h_lab = eval_orientation("horizontal")
+
+    if not v_valid and not h_valid:
+        return "none"
+    if v_valid and not h_valid:
+        return "vertical"
+    if h_valid and not v_valid:
+        return "horizontal"
+
+    # both valid, choose larger min coverage, then larger sum coverage, then more labeled pixels
+    if h_min > v_min:
+        return "horizontal"
+    if v_min > h_min:
+        return "vertical"
+    if h_sum > v_sum:
+        return "horizontal"
+    if v_sum > h_sum:
+        return "vertical"
+    return "horizontal"  # final tie breaker
+
+
+def process_with_dynamic_cut(img_rgb: np.ndarray,
+                             anns: np.ndarray,
+                             *,
+                             use_dynamic_cut: bool,
+                             dynamic_cut_strict_bg: bool,
+                             dynamic_cut_require_fg: bool,
+                             dynamic_cut_verbose: bool,
+                             enable_majority_vote: bool,
+                             ensemble_trio: List[str],
+                             gc_iters: int,
+                             tie_mode: str,
+                             trio_parallel: bool,
+                             trio_workers: int,
+                             single_color_space: str) -> np.ndarray:
+    """
+    Wrapper that decides orientation, optionally splits, runs either ensemble or single space on halves or whole,
+    and merges results back if split.
+    """
+    H, W, _ = img_rgb.shape
+
+    def run_core(img_rgb_local: np.ndarray, anns_local: np.ndarray) -> np.ndarray:
+        if enable_majority_vote:
+            return run_one_vs_rest_majority_ensemble(
+                img_rgb_u8=img_rgb_local,
+                anns=anns_local,
+                trio=ensemble_trio,
+                gc_iters=int(gc_iters),
+                tie_mode=tie_mode,
+                trio_parallel=trio_parallel,
+                trio_workers=trio_workers
+            )
+        else:
+            feats = convert_color_space(img_rgb_local, single_color_space)
+            return run_one_vs_rest(feats, anns_local, gc_iters=int(gc_iters), tie_mode=tie_mode)  # type: ignore
+
+    if not use_dynamic_cut:
+        return run_core(img_rgb, anns)
+
+    orientation = decide_cut_orientation(
+        anns, strict_bg=dynamic_cut_strict_bg, require_fg=dynamic_cut_require_fg
+    )
+
+    if dynamic_cut_verbose:
+        tqdm.write(f"[DynamicCut] choice={orientation}")
+
+    if orientation == "none":
+        return run_core(img_rgb, anns)
+
+    (img1, a1), (img2, a2) = split_image_and_anns(img_rgb, anns, orientation)
+    pred1 = run_core(img1, a1)
+    pred2 = run_core(img2, a2)
+    merged = merge_masks(pred1, pred2, orientation, H, W)
+
+    # Safety shape check and correction by padding or cropping to original size
+    if merged.shape[0] != H or merged.shape[1] != W:
+        merged = merged[:H, :W]
+        if merged.shape[0] < H or merged.shape[1] < W:
+            pad_h = H - merged.shape[0]
+            pad_w = W - merged.shape[1]
+            merged = np.pad(merged, ((0, pad_h), (0, pad_w)), mode="edge")
+
+    return merged
+
+
 # ---------- worker for parallel batch ----------
 
 def _process_single_image(ann_path: str,
@@ -371,7 +551,11 @@ def _process_single_image(ann_path: str,
                           enable_majority_vote: bool,
                           ensemble_trio: str,
                           trio_parallel: bool,
-                          trio_workers: int) -> Dict[str, object]:
+                          trio_workers: int,
+                          enable_dynamic_cut: bool,
+                          dynamic_cut_strict_bg: bool,
+                          dynamic_cut_require_fg: bool,
+                          dynamic_cut_verbose: bool) -> Dict[str, object]:
     """Worker function to process a single image, safe for ProcessPoolExecutor."""
     ann_p = Path(ann_path)
     images_dir_p = Path(images_dir)
@@ -392,31 +576,31 @@ def _process_single_image(ann_path: str,
                          (img_rgb.shape[1], img_rgb.shape[0]),
                          interpolation=cv.INTER_NEAREST)
 
-    # run either majority ensemble or single space
-    if enable_majority_vote:
-        trio = [s.strip() for s in (ensemble_trio if ensemble_trio else "jzazbz,jzczhz,rgb").split(",")]
-        if len(trio) != 3:
-            return {"ok": False, "base": base, "reason": "ensemble_trio must have exactly 3 entries"}
-        pred = run_one_vs_rest_majority_ensemble(
-            img_rgb_u8=img_rgb,
-            anns=anns,
-            trio=trio,
-            gc_iters=int(gc_iters),
-            tie_mode=tie_mode,
-            trio_parallel=bool(trio_parallel),
-            trio_workers=int(trio_workers) if trio_workers else 0
-        )
-        written = []  # no model export in ensemble path
-    else:
-        img_feats = convert_color_space(img_rgb, color_space)
-        pred = run_one_vs_rest(img_feats, anns, gc_iters=int(gc_iters), tie_mode=tie_mode)  # type: ignore
-        written = []
+    # Build ensemble trio list
+    trio = [s.strip() for s in (ensemble_trio if ensemble_trio else "jzazbz,jzczhz,rgb").split(",")]
+    if enable_majority_vote and len(trio) != 3:
+        return {"ok": False, "base": base, "reason": "ensemble_trio must have exactly 3 entries"}
+
+    pred = process_with_dynamic_cut(
+        img_rgb, anns,
+        use_dynamic_cut=bool(enable_dynamic_cut),
+        dynamic_cut_strict_bg=bool(dynamic_cut_strict_bg),
+        dynamic_cut_require_fg=bool(dynamic_cut_require_fg),
+        dynamic_cut_verbose=bool(dynamic_cut_verbose),
+        enable_majority_vote=bool(enable_majority_vote),
+        ensemble_trio=trio,
+        gc_iters=int(gc_iters),
+        tie_mode=tie_mode,
+        trio_parallel=bool(trio_parallel) and bool(enable_majority_vote),
+        trio_workers=int(trio_workers) if trio_workers else 0,
+        single_color_space=color_space
+    )
 
     out_path = out_dir_p / f"{base}_index.png"
     save_indexed_png(pred, str(out_path))
 
     dt = (perf_counter() - t0) * 1000.0
-    return {"ok": True, "base": base, "ms": dt, "out": out_path.name, "models_written": written}
+    return {"ok": True, "base": base, "ms": dt, "out": out_path.name, "models_written": []}
 
 
 # ---------- CLI ----------
@@ -452,6 +636,19 @@ def parse_args(argv=None):
     ap.add_argument("--ensemble_trio_workers", type=int, default=0,
                     help="Workers for intra image trio parallelization with threads, 0 means len(trio)")
 
+    # dynamic cut controls
+    ap.add_argument("--enable_dynamic_cut", type=lambda x: str(x).lower() not in {"0", "false", "no"},
+                    default=True,
+                    help="Enable dynamic single cut per image, default true.")
+    ap.add_argument("--dynamic_cut_strict_bg", type=lambda x: str(x).lower() not in {"0", "false", "no"},
+                    default=True,
+                    help="Require background scribbles in both halves, default true.")
+    ap.add_argument("--dynamic_cut_require_fg", type=lambda x: str(x).lower() not in {"0", "false", "no"},
+                    default=True,
+                    help="Require foreground scribbles in both halves, default true.")
+    ap.add_argument("--dynamic_cut_verbose", action="store_true",
+                    help="Print decision details for the dynamic cut.")
+
     ap.add_argument("--parallel", action="store_true", help="Enable parallel processing of images")
     ap.add_argument("--max_workers", type=int, default=0, help="Workers for parallel mode, 0 picks os.cpu_count()")
 
@@ -486,7 +683,6 @@ def main(argv=None):
     elif args.ensemble_trio_parallel == "off":
         trio_parallel_flag = False
     else:
-        # auto
         trio_parallel_flag = not bool(args.parallel)
 
     if args.parallel:
@@ -498,8 +694,11 @@ def main(argv=None):
                     str(ann_path), str(images_dir), str(out_dir),
                     str(args.color_space), int(args.gc_iters), str(args.tie_mode),
                     bool(args.enable_majority_vote), str(args.ensemble_trio),
-                    bool(trio_parallel_flag) and bool(args.enable_majority_vote),  # only matters for ensemble path
-                    int(args.ensemble_trio_workers)
+                    bool(trio_parallel_flag), int(args.ensemble_trio_workers),
+                    bool(args.enable_dynamic_cut),
+                    bool(args.dynamic_cut_strict_bg),
+                    bool(args.dynamic_cut_require_fg),
+                    bool(args.dynamic_cut_verbose)
                 ): ann_path for ann_path in ann_files
             }
             for fut in tqdm(as_completed(futures), total=len(futures), unit="img", desc="GrabCut[par]"):
@@ -540,23 +739,24 @@ def main(argv=None):
                                      (img_rgb.shape[1], img_rgb.shape[0]),
                                      interpolation=cv.INTER_NEAREST)
 
-                written = []
-                if args.enable_majority_vote:
-                    trio = [s.strip() for s in (args.ensemble_trio if args.ensemble_trio else "jzazbz,jzczhz,rgb").split(",")]
-                    if len(trio) != 3:
-                        raise ValueError("ensemble_trio must have exactly three comma separated color spaces")
-                    pred = run_one_vs_rest_majority_ensemble(
-                        img_rgb_u8=img_rgb,
-                        anns=anns,
-                        trio=trio,
-                        gc_iters=int(args.gc_iters),
-                        tie_mode=args.tie_mode,
-                        trio_parallel=bool(trio_parallel_flag),
-                        trio_workers=int(args.ensemble_trio_workers)
-                    )
-                else:
-                    img_feats = convert_color_space(img_rgb, args.color_space)
-                    pred = run_one_vs_rest(img_feats, anns, gc_iters=int(args.gc_iters), tie_mode=args.tie_mode)  # type: ignore
+                trio = [s.strip() for s in (args.ensemble_trio if args.ensemble_trio else "jzazbz,jzczhz,rgb").split(",")]
+                if args.enable_majority_vote and len(trio) != 3:
+                    raise ValueError("ensemble_trio must have exactly three comma separated color spaces")
+
+                pred = process_with_dynamic_cut(
+                    img_rgb, anns,
+                    use_dynamic_cut=bool(args.enable_dynamic_cut),
+                    dynamic_cut_strict_bg=bool(args.dynamic_cut_strict_bg),
+                    dynamic_cut_require_fg=bool(args.dynamic_cut_require_fg),
+                    dynamic_cut_verbose=bool(args.dynamic_cut_verbose),
+                    enable_majority_vote=bool(args.enable_majority_vote),
+                    ensemble_trio=trio,
+                    gc_iters=int(args.gc_iters),
+                    tie_mode=args.tie_mode,
+                    trio_parallel=bool(trio_parallel_flag) and bool(args.enable_majority_vote),
+                    trio_workers=int(args.ensemble_trio_workers),
+                    single_color_space=args.color_space
+                )
 
                 out_path = out_dir / f"{base}_index.png"
                 save_indexed_png(pred, str(out_path))
@@ -565,8 +765,6 @@ def main(argv=None):
                 times_ms.append(dt)
                 processed += 1
                 msg = f"[OK] {base} ({dt:.1f} ms) -> {out_path.name}"
-                if written:
-                    msg += f", models: {len(written)} files"
                 tqdm.write(msg)
 
             except FileNotFoundError:
@@ -595,6 +793,9 @@ def main(argv=None):
             "ensemble_trio": str(args.ensemble_trio),
             "ensemble_trio_parallel": str(args.ensemble_trio_parallel),
             "ensemble_trio_workers": int(args.ensemble_trio_workers),
+            "enable_dynamic_cut": bool(args.enable_dynamic_cut),
+            "dynamic_cut_strict_bg": bool(args.dynamic_cut_strict_bg),
+            "dynamic_cut_require_fg": bool(args.dynamic_cut_require_fg),
             "parallel": bool(args.parallel),
             "max_workers": int(args.max_workers if args.max_workers else (os.cpu_count() or 4) if args.parallel else 0),
         },
