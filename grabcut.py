@@ -360,45 +360,6 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
     return final
 
 
-# ---------- model I O helpers ----------
-
-def _ensure_dir(p: Path) -> None:
-    p.mkdir(parents=True, exist_ok=True)
-
-
-def save_models_npz(base: str,
-                    color_space: str,
-                    out_dir: Path,
-                    models_by_class: Dict[int, Dict[str, np.ndarray]],
-                    meta: Optional[Dict[str, object]] = None) -> List[str]:
-    """
-    Save per-class models to individual NPZ files.
-
-    File name pattern: {base}__{color_space}__c{class_id:02d}__models.npz
-    Contents:
-      - bgdModel, shape 1 by 65 float64
-      - fgdModel, shape 1 by 65 float64
-      - meta, dict stored as JSON string under key meta_json
-    Returns list of filenames written.
-    """
-    written: List[str] = []
-    _ensure_dir(out_dir)
-
-    meta_json = json.dumps(meta or {}, ensure_ascii=False)
-    for c, d in models_by_class.items():
-        bgm = np.asarray(d.get("bgdModel"))
-        fgm = np.asarray(d.get("fgdModel"))
-
-        if bgm.shape != (1, 65) or fgm.shape != (1, 65):
-            continue
-
-        fname = f"{base}__{color_space}__c{c:02d}__models.npz"
-        fpath = out_dir / fname
-        np.savez(fpath, bgdModel=bgm, fgdModel=fgm, meta_json=meta_json)
-        written.append(fname)
-    return written
-
-
 # ---------- worker for parallel batch ----------
 
 def _process_single_image(ann_path: str,
@@ -407,8 +368,6 @@ def _process_single_image(ann_path: str,
                           color_space: str,
                           gc_iters: int,
                           tie_mode: str,
-                          emit_models: bool,
-                          models_dir: Optional[str],
                           enable_majority_vote: bool,
                           ensemble_trio: str,
                           trio_parallel: bool,
@@ -450,24 +409,8 @@ def _process_single_image(ann_path: str,
         written = []  # no model export in ensemble path
     else:
         img_feats = convert_color_space(img_rgb, color_space)
-        if emit_models:
-            pred, models_by_class = run_one_vs_rest(img_feats, anns, gc_iters=int(gc_iters), tie_mode=tie_mode, collect_models=True)  # type: ignore
-            models_out_dir = Path(models_dir) if models_dir else (out_dir_p / "models")
-            written = save_models_npz(
-                base=base,
-                color_space=color_space,
-                out_dir=models_out_dir,
-                models_by_class=models_by_class,
-                meta={
-                    "base": base,
-                    "color_space": color_space,
-                    "gc_iters": int(gc_iters),
-                    "tie_mode": tie_mode,
-                },
-            )
-        else:
-            pred = run_one_vs_rest(img_feats, anns, gc_iters=int(gc_iters), tie_mode=tie_mode)  # type: ignore
-            written = []
+        pred = run_one_vs_rest(img_feats, anns, gc_iters=int(gc_iters), tie_mode=tie_mode)  # type: ignore
+        written = []
 
     out_path = out_dir_p / f"{base}_index.png"
     save_indexed_png(pred, str(out_path))
@@ -509,11 +452,6 @@ def parse_args(argv=None):
     ap.add_argument("--ensemble_trio_workers", type=int, default=0,
                     help="Workers for intra image trio parallelization with threads, 0 means len(trio)")
 
-    ap.add_argument("--emit_models", action="store_true",
-                    help="When set, save per class bgdModel and fgdModel NPZ files for the single space path.")
-    ap.add_argument("--models_dir", type=str, default="",
-                    help="Optional output directory for NPZ model files, defaults to output_dir slash models")
-
     ap.add_argument("--parallel", action="store_true", help="Enable parallel processing of images")
     ap.add_argument("--max_workers", type=int, default=0, help="Workers for parallel mode, 0 picks os.cpu_count()")
 
@@ -526,10 +464,6 @@ def main(argv=None):
     anns_dir = Path(args.anns_dir)
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    models_out_dir = Path(args.models_dir) if args.models_dir else (out_dir / "models")
-    if args.emit_models and not args.enable_majority_vote:
-        models_out_dir.mkdir(parents=True, exist_ok=True)
 
     ann_files = sorted([p for p in anns_dir.iterdir()
                         if p.suffix.lower() in (".npy", ".png", ".bmp", ".tif", ".tiff")])
@@ -623,22 +557,7 @@ def main(argv=None):
                     )
                 else:
                     img_feats = convert_color_space(img_rgb, args.color_space)
-                    if args.emit_models:
-                        pred, models_by_class = run_one_vs_rest(img_feats, anns, gc_iters=int(args.gc_iters), tie_mode=args.tie_mode, collect_models=True)  # type: ignore
-                        written = save_models_npz(
-                            base=base,
-                            color_space=args.color_space,
-                            out_dir=models_out_dir,
-                            models_by_class=models_by_class,
-                            meta={
-                                "base": base,
-                                "color_space": args.color_space,
-                                "gc_iters": int(args.gc_iters),
-                                "tie_mode": args.tie_mode,
-                            },
-                        )
-                    else:
-                        pred = run_one_vs_rest(img_feats, anns, gc_iters=int(args.gc_iters), tie_mode=args.tie_mode)  # type: ignore
+                    pred = run_one_vs_rest(img_feats, anns, gc_iters=int(args.gc_iters), tie_mode=args.tie_mode)  # type: ignore
 
                 out_path = out_dir / f"{base}_index.png"
                 save_indexed_png(pred, str(out_path))
@@ -678,8 +597,6 @@ def main(argv=None):
             "ensemble_trio_parallel": str(args.ensemble_trio_parallel),
             "ensemble_trio_workers": int(args.ensemble_trio_workers),
             "parallel": bool(args.parallel),
-            "emit_models": bool(args.emit_models) and not bool(args.enable_majority_vote),
-            "models_dir": str(models_out_dir) if args.emit_models and not args.enable_majority_vote else None,
             "max_workers": int(args.max_workers if args.max_workers else (os.cpu_count() or 4) if args.parallel else 0),
         },
         "timing_ms_avg": (float(np.mean(times_ms)) if times_ms else None)
