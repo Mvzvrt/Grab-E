@@ -48,6 +48,18 @@ import os
 import numpy as np
 import cv2 as cv
 from PIL import Image
+
+import math
+try:
+    from cv2 import ximgproc as cv_ximgproc  # type: ignore
+except Exception:  # pragma: no cover
+    cv_ximgproc = None
+try:
+    from skimage.segmentation import slic as skimage_slic  # type: ignore
+    from skimage.util import img_as_float  # type: ignore
+except Exception:  # pragma: no cover
+    skimage_slic = None
+    img_as_float = None
 from tqdm import tqdm
 
 # ---------- constants / palette ----------
@@ -124,6 +136,112 @@ def base_from_ann_name(name: str) -> str:
 # ---------- color-space helpers moved to color_space.py ----------
 from color_space import convert_color_space, get_color_converter  # type: ignore
 
+
+
+# ---------- superpixel preprocessing (paper-inspired) ----------
+def _compute_slic_labels(img_rgb_u8: np.ndarray,
+                         num_segments: int = 500,
+                         compactness: float = 10.0,
+                         iterations: int = 10,
+                         algorithm: str = "SLICO",
+                         min_element_size: int = 25) -> np.ndarray:
+    """Return HxW int32 labels for SLIC superpixels.
+
+    Prefers OpenCV ximgproc SLIC for speed, falls back to scikit-image if available.
+    The working space for clustering is CIELAB as in the paper, see PDF page 2 figure and steps 1 to 3.
+    """
+    H, W, _ = img_rgb_u8.shape
+    lab = cv.cvtColor(img_rgb_u8, cv.COLOR_RGB2Lab)
+
+    if 'cv_ximgproc' in globals() and cv_ximgproc is not None:
+        algo_map = {"SLIC": getattr(cv_ximgproc, "SLIC", 100),
+                    "SLICO": getattr(cv_ximgproc, "SLICO", 101),
+                    "MSLIC": getattr(cv_ximgproc, "MSLIC", 102)}
+        algo = algo_map.get(algorithm.upper(), list(algo_map.values())[0])
+
+        region_size = max(5, int(math.sqrt((H * W) / max(1, num_segments))))
+        ruler = float(compactness)
+
+        sp = cv_ximgproc.createSuperpixelSLIC(lab, algorithm=algo, region_size=region_size, ruler=ruler)
+        sp.iterate(int(max(1, iterations)))
+        if min_element_size and hasattr(sp, "enforceLabelConnectivity"):
+            try:
+                sp.enforceLabelConnectivity(int(min_element_size))
+            except Exception:
+                pass
+        labels = sp.getLabels().astype(np.int32, copy=False)
+        return labels
+    elif 'skimage_slic' in globals() and skimage_slic is not None and img_as_float is not None:
+        seg = skimage_slic(img_as_float(img_rgb_u8), n_segments=int(num_segments),
+                           compactness=float(compactness), max_num_iter=int(iterations),
+                           start_label=0, slic_zero=(algorithm.upper() == "SLICO"))
+        return np.asarray(seg, dtype=np.int32)
+    else:
+        approx_side = int(math.sqrt(max(1, (H*W) / max(1, num_segments))))
+        gh = max(5, approx_side)
+        gw = max(5, approx_side)
+        labels = np.zeros((H, W), dtype=np.int32)
+        lab_id = 0
+        for y in range(0, H, gh):
+            for x in range(0, W, gw):
+                labels[y:y+gh, x:x+gw] = lab_id
+                lab_id += 1
+        return labels
+
+
+def _apply_superpixel_fill(img_feats_u8: np.ndarray,
+                           labels: np.ndarray,
+                           fill_mode: str = "corner") -> np.ndarray:
+    """Fill each superpixel with its 'corner' color, or mean color.
+
+    'corner' matches the paper's preprocessing step on page 3, step 4.
+    """
+    feats = img_feats_u8
+    if feats.dtype != np.uint8:
+        feats = np.clip(feats, 0, 255).astype(np.uint8)
+
+    H, W, C = feats.shape
+    out = feats.copy()
+    lbl = labels.astype(np.int32, copy=False)
+    n = int(lbl.max()) + 1
+
+    if fill_mode == "mean":
+        flat = feats.reshape(-1, 3)
+        lbl_flat = lbl.reshape(-1)
+        for ch in range(3):
+            sums = np.bincount(lbl_flat, weights=flat[:, ch].astype(np.float64), minlength=n)
+            counts = np.bincount(lbl_flat, minlength=n).astype(np.float64)
+            means = np.divide(sums, np.maximum(counts, 1.0), out=np.zeros_like(sums), where=counts>0)
+            out[..., ch] = means[lbl].astype(np.uint8)
+    else:
+        first_seen = np.full((n, 3), -1, dtype=np.int32)
+        for y in range(H):
+            row_lbl = lbl[y]
+            row_pix = feats[y]
+            for x in range(W):
+                lid = int(row_lbl[x])
+                if first_seen[lid, 0] < 0:
+                    first_seen[lid] = row_pix[x]
+        out = first_seen[lbl].astype(np.uint8)
+    return out
+
+
+def preprocess_features_with_superpixels(img_rgb_u8: np.ndarray,
+                                         img_feats_u8: np.ndarray,
+                                         num_segments: int = 500,
+                                         compactness: float = 10.0,
+                                         iterations: int = 10,
+                                         algorithm: str = "SLICO",
+                                         min_element_size: int = 25,
+                                         fill_mode: str = "corner") -> np.ndarray:
+    labels = _compute_slic_labels(img_rgb_u8,
+                                  num_segments=int(num_segments),
+                                  compactness=float(compactness),
+                                  iterations=int(iterations),
+                                  algorithm=str(algorithm),
+                                  min_element_size=int(min_element_size))
+    out = _apply_superpixel_fill(img_feats_u8, labels, fill_mode=str(fill_mode))
+    return out
 
 # ---------- OpenCV GrabCut, single call ----------
 
@@ -412,7 +530,14 @@ def _process_single_image(ann_path: str,
                           enable_majority_vote: bool,
                           ensemble_trio: str,
                           trio_parallel: bool,
-                          trio_workers: int) -> Dict[str, object]:
+                          trio_workers: int,
+                          use_superpixels: bool = True,
+                          slic_num_segments: int = 500,
+                          slic_compactness: float = 10.0,
+                          slic_iterations: int = 10,
+                          slic_algorithm: str = "SLICO",
+                          slic_min_size: int = 25,
+                          superpixel_fill_mode: str = "corner") -> Dict[str, object]:
     """Worker function to process a single image, safe for ProcessPoolExecutor."""
     ann_p = Path(ann_path)
     images_dir_p = Path(images_dir)
@@ -445,11 +570,23 @@ def _process_single_image(ann_path: str,
             gc_iters=int(gc_iters),
             tie_mode=tie_mode,
             trio_parallel=bool(trio_parallel),
-            trio_workers=int(trio_workers) if trio_workers else 0
+            trio_workers=int(trio_workers) if trio_workers else 0,
+            use_superpixels=bool(use_superpixels),
+            slic_num_segments=int(slic_num_segments),
+            slic_compactness=float(slic_compactness),
+            slic_iterations=int(slic_iterations),
+            slic_algorithm=str(slic_algorithm),
+            slic_min_size=int(slic_min_size),
+            superpixel_fill_mode=str(superpixel_fill_mode)
         )
         written = []  # no model export in ensemble path
     else:
         img_feats = convert_color_space(img_rgb, color_space)
+        if use_superpixels:
+            img_feats = preprocess_features_with_superpixels(img_rgb, img_feats,
+                num_segments=int(slic_num_segments), compactness=float(slic_compactness),
+                iterations=int(slic_iterations), algorithm=str(slic_algorithm),
+                min_element_size=int(slic_min_size), fill_mode=str(superpixel_fill_mode))
         if emit_models:
             pred, models_by_class = run_one_vs_rest(img_feats, anns, gc_iters=int(gc_iters), tie_mode=tie_mode, collect_models=True)  # type: ignore
             models_out_dir = Path(models_dir) if models_dir else (out_dir_p / "models")
@@ -486,7 +623,7 @@ def parse_args(argv=None):
     ap.add_argument("--num_images", type=int, default=0, help="0 means all")
     ap.add_argument("--start_one", type=int, default=1, help="1 based index of first file")
 
-    ap.add_argument("--gc_iters", type=int, default=5, help="Iterations for cv2.GrabCut, typical 1 to 5")
+    ap.add_argument("--gc_iters", type=int, default=15, help="Iterations for cv2.GrabCut, typical 1 to 5")
     ap.add_argument("--tie_mode", type=str, default="nearest-scribble",
                     choices=["nearest-scribble", "first-wins"],
                     help="How to resolve multi class overlaps")
@@ -500,6 +637,18 @@ def parse_args(argv=None):
                     help="Input feature color space for the single space baseline path. Default is rgb.")
 
     # majority voting ensemble controls
+    # superpixel preprocessing controls, enabled by default
+    ap.add_argument("--use_superpixels", dest="use_superpixels", action="store_true", default=True,
+                    help="Enable SLIC superpixel preprocessing before GrabCut [default on].")
+    ap.add_argument("--disable_superpixels", dest="use_superpixels", action="store_false",
+                    help="Disable SLIC superpixel preprocessing.")
+    ap.add_argument("--slic_num_segments", type=int, default=500, help="Target number of superpixels.")
+    ap.add_argument("--slic_compactness", type=float, default=10, help="SLIC compactness parameter.")
+    ap.add_argument("--slic_iterations", type=int, default=15, help="SLIC iterations.")
+    ap.add_argument("--slic_algorithm", type=str, default="SLIC", choices=["SLIC", "SLICO", "MSLIC"], help="SLIC variant.")
+    ap.add_argument("--slic_min_size", type=int, default=30, help="Min element size for connectivity enforcement.")
+    ap.add_argument("--superpixel_fill_mode", type=str, default="corner", choices=["corner", "mean"], help="How to fill each superpixel.")
+    
     ap.add_argument("--enable_majority_vote", action="store_true",
                     help="Enable majority voting ensemble across a trio of color spaces for binary masks prior to class assignment.")
     ap.add_argument("--ensemble_trio", type=str, default="jzazbz,jzczhz,rgb",
@@ -566,7 +715,14 @@ def main(argv=None):
                     bool(args.emit_models), str(models_out_dir) if args.emit_models and not args.enable_majority_vote else "",
                     bool(args.enable_majority_vote), str(args.ensemble_trio),
                     bool(trio_parallel_flag) and bool(args.enable_majority_vote),  # only matters for ensemble path
-                    int(args.ensemble_trio_workers)
+                    int(args.ensemble_trio_workers),
+                    bool(args.use_superpixels),
+                    int(args.slic_num_segments),
+                    float(args.slic_compactness),
+                    int(args.slic_iterations),
+                    str(args.slic_algorithm),
+                    int(args.slic_min_size),
+                    str(args.superpixel_fill_mode)
                 ): ann_path for ann_path in ann_files
             }
             for fut in tqdm(as_completed(futures), total=len(futures), unit="img", desc="GrabCut[par]"):
@@ -619,10 +775,22 @@ def main(argv=None):
                         gc_iters=int(args.gc_iters),
                         tie_mode=args.tie_mode,
                         trio_parallel=bool(trio_parallel_flag),
-                        trio_workers=int(args.ensemble_trio_workers)
+                        trio_workers=int(args.ensemble_trio_workers),
+                        use_superpixels=bool(args.use_superpixels),
+                        slic_num_segments=int(args.slic_num_segments),
+                        slic_compactness=float(args.slic_compactness),
+                        slic_iterations=int(args.slic_iterations),
+                        slic_algorithm=str(args.slic_algorithm),
+                        slic_min_size=int(args.slic_min_size),
+                        superpixel_fill_mode=str(args.superpixel_fill_mode)
                     )
                 else:
                     img_feats = convert_color_space(img_rgb, args.color_space)
+                if args.use_superpixels:
+                    img_feats = preprocess_features_with_superpixels(img_rgb, img_feats,
+                        num_segments=int(args.slic_num_segments), compactness=float(args.slic_compactness),
+                        iterations=int(args.slic_iterations), algorithm=str(args.slic_algorithm),
+                        min_element_size=int(args.slic_min_size), fill_mode=str(args.superpixel_fill_mode))
                     if args.emit_models:
                         pred, models_by_class = run_one_vs_rest(img_feats, anns, gc_iters=int(args.gc_iters), tie_mode=args.tie_mode, collect_models=True)  # type: ignore
                         written = save_models_npz(
