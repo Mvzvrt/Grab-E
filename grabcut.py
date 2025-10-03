@@ -1,4 +1,3 @@
-# Filename: grabcut.py
 # -*- coding: utf-8 -*-
 
 """
@@ -32,6 +31,11 @@ Output mapping when saving:
       auto, when args.parallel is False, parallelize the three color spaces for a single image, when args.parallel is True, do them sequentially to avoid oversubscription.
     --ensemble_trio_workers, integer, default 0 which means use len(trio) workers.
 - Implementation uses ThreadPoolExecutor to avoid nested process spawning when batch mode is also using processes.
+
+2025-10-03 Pre-GrabCut improvement (paper-aligned, component-wise):
+- Optional SLIC + minimum-error Bayes + second SLIC preprocessing per class before calling GrabCut.
+- Controlled by --improved flag and SLIC parameters, no changes to GrabCut core.
+- Applies to both single color space and ensemble paths.
 """
 
 from __future__ import annotations
@@ -41,7 +45,8 @@ import json
 import warnings
 from pathlib import Path
 from time import perf_counter
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple, Callable
+from dataclasses import dataclass
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 import os
 
@@ -49,6 +54,22 @@ import numpy as np
 import cv2 as cv
 from PIL import Image
 from tqdm import tqdm
+
+# ---------- optional imports for SLIC ----------
+_HAS_SKIMAGE = False
+_HAS_XIMGPROC = False
+try:
+    from skimage.segmentation import slic as _sk_slic
+    from skimage.util import img_as_float as _sk_img_as_float
+    _HAS_SKIMAGE = True
+except Exception:
+    _HAS_SKIMAGE = False
+
+try:
+    _ = cv.ximgproc.createSuperpixelSLIC  # type: ignore[attr-defined]
+    _HAS_XIMGPROC = True
+except Exception:
+    _HAS_XIMGPROC = False
 
 # ---------- constants / palette ----------
 NUM_VOC_CLASSES = 21
@@ -125,6 +146,153 @@ def base_from_ann_name(name: str) -> str:
 from color_space import convert_color_space, get_color_converter  # type: ignore
 
 
+# ---------- Pre-GrabCut improvement: SLIC + Bayes + SLIC ----------
+
+@dataclass
+class SLICParams:
+    n_segments: int = 400
+    compactness: float = 15.0
+    sigma: float = 0.8
+    enforce_connectivity: bool = True
+
+@dataclass
+class ImprovedParams:
+    enabled: bool = False
+    slic_segments: int = 400
+    slic_compactness: float = 15.0
+    slic_sigma: float = 0.8
+    bayes_space: str = "rgb"  # choices: rgb, lab
+    region_vote: bool = True  # majority per superpixel, then assign class-constant RGB
+
+def _to_u8(img: np.ndarray) -> np.ndarray:
+    if img.dtype == np.uint8:
+        return img
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+def _run_slic(img_rgb_u8: np.ndarray, params: SLICParams) -> np.ndarray:
+    H, W = img_rgb_u8.shape[:2]
+    if _HAS_SKIMAGE:
+        seg = _sk_slic(
+            _sk_img_as_float(img_rgb_u8),
+            n_segments=int(params.n_segments),
+            compactness=float(params.compactness),
+            sigma=float(params.sigma),
+            start_label=0,
+            enforce_connectivity=bool(params.enforce_connectivity),
+        )
+        return np.asarray(seg, dtype=np.int32)
+    if _HAS_XIMGPROC:
+        region_size = max(5, int(np.sqrt((H * W) / float(params.n_segments))))
+        sp = cv.ximgproc.createSuperpixelSLIC(  # type: ignore[attr-defined]
+            img_rgb_u8, algorithm=cv.ximgproc.SLICO, region_size=region_size, ruler=float(params.compactness)
+        )
+        sp.iterate(10)
+        labels = sp.getLabels()
+        return labels.astype(np.int32)
+    raise ImportError("SLIC unavailable, install scikit-image or opencv-contrib-python.")
+
+def _image_from_superpixel_means(img_rgb_u8: np.ndarray, seg: np.ndarray) -> np.ndarray:
+    out = np.zeros_like(img_rgb_u8, dtype=np.float32)
+    labels = np.unique(seg)
+    for lb in labels:
+        m = (seg == lb)
+        if not np.any(m):
+            continue
+        out[m] = img_rgb_u8[m].mean(axis=0)
+    return _to_u8(out)
+
+def _fit_channel_gaussian(vals: np.ndarray) -> Tuple[float, float]:
+    if vals.size == 0:
+        return 0.0, 1.0
+    mu = float(vals.mean())
+    var = float(vals.var())
+    if var < 1e-6:
+        var = 1e-6
+    return mu, var
+
+def _naive_bayes_logp(x: np.ndarray, mu: np.ndarray, var: np.ndarray) -> np.ndarray:
+    c = 3.0 * np.log(2.0 * np.pi)
+    logdet = np.log(var[0]) + np.log(var[1]) + np.log(var[2])
+    ll = -0.5 * (c + logdet)
+    d = ((x[..., 0] - mu[0]) ** 2) / var[0] + ((x[..., 1] - mu[1]) ** 2) / var[1] + ((x[..., 2] - mu[2]) ** 2) / var[2]
+    return ll - 0.5 * d
+
+def _to_space(img_rgb_u8: np.ndarray, space: str) -> np.ndarray:
+    if space == "rgb":
+        return img_rgb_u8.astype(np.float32)
+    if space == "lab":
+        return cv.cvtColor(img_rgb_u8, cv.COLOR_RGB2LAB).astype(np.float32)
+    raise ValueError("Unsupported bayes_space, choose rgb or lab")
+
+def _minimum_error_bayes(img_rgb_u8: np.ndarray, seeds_bg: np.ndarray, seeds_fg: np.ndarray, space: str = "rgb") -> np.ndarray:
+    """Binary classify pixels, equal priors, independent components, evaluated on simplified image.
+    Returns uint8 mask 0 BG, 1 FG.
+    """
+    x = _to_space(img_rgb_u8, space)
+    fg_vals = x[seeds_fg]
+    bg_vals = x[seeds_bg]
+    if fg_vals.size == 0 or bg_vals.size == 0:
+        return np.zeros(img_rgb_u8.shape[:2], dtype=np.uint8)
+    mu_fg = np.array([_fit_channel_gaussian(fg_vals[:, i])[0] for i in range(3)], dtype=np.float32)
+    var_fg = np.array([_fit_channel_gaussian(fg_vals[:, i])[1] for i in range(3)], dtype=np.float32)
+    mu_bg = np.array([_fit_channel_gaussian(bg_vals[:, i])[0] for i in range(3)], dtype=np.float32)
+    var_bg = np.array([_fit_channel_gaussian(bg_vals[:, i])[1] for i in range(3)], dtype=np.float32)
+
+    lpf = _naive_bayes_logp(x, mu_fg, var_fg)
+    lpb = _naive_bayes_logp(x, mu_bg, var_bg)
+    return (lpf > lpb).astype(np.uint8)
+
+def improved_preprocess_rgb(img_rgb_u8: np.ndarray,
+                            seeds_bg: np.ndarray,
+                            seeds_fg: np.ndarray,
+                            params: ImprovedParams) -> np.ndarray:
+    """
+    SLIC (RGB means) -> Bayes classification on simplified image -> per superpixel region vote to FG or BG,
+    assign a fixed RGB per class to each superpixel -> second SLIC -> region means again.
+    The result is an RGB uint8 image for feature conversion before GrabCut.
+    """
+    if not params.enabled:
+        return img_rgb_u8
+
+    if not np.any(seeds_fg):
+        return img_rgb_u8
+
+    sp = SLICParams(n_segments=params.slic_segments,
+                    compactness=params.slic_compactness,
+                    sigma=params.slic_sigma)
+
+    # Step 1, SLIC and replace by RGB means (paper Step 1)
+    seg1 = _run_slic(img_rgb_u8, sp)
+    simp = _image_from_superpixel_means(img_rgb_u8, seg1)
+
+    # Step 2, Bayes classification on simplified image, equal priors, independent components
+    bayes_mask = _minimum_error_bayes(simp, seeds_bg, seeds_fg, space=params.bayes_space)  # 0 BG, 1 FG
+
+    # Compute class representative RGB colors from the simplified image
+    fg_const = np.array([int(simp[seeds_fg, c].mean()) if np.any(seeds_fg) else 255 for c in range(3)], dtype=np.uint8)
+    bg_const = np.array([int(simp[seeds_bg, c].mean()) if np.any(seeds_bg) else 0 for c in range(3)], dtype=np.uint8)
+
+    # Step 2b, region vote per superpixel and assign class constant
+    processed = np.zeros_like(simp, dtype=np.uint8)
+    labels = np.unique(seg1)
+    for lb in labels:
+        m = (seg1 == lb)
+        if params.region_vote:
+            vote = int((bayes_mask[m].sum() >= (m.sum() // 2 + 1)))
+        else:
+            # fallback, single pixel decision by superpixel center
+            ys, xs = np.where(m)
+            cy, cx = ys[len(ys)//2], xs[len(xs)//2]
+            vote = int(bayes_mask[cy, cx] > 0)
+        processed[m] = fg_const if vote == 1 else bg_const
+
+    # Step 3, a second SLIC over the processed image, then region mean assignment
+    seg2 = _run_slic(processed, sp)
+    processed2 = _image_from_superpixel_means(processed, seg2)
+
+    return _to_u8(processed2)
+
+
 # ---------- OpenCV GrabCut, single call ----------
 
 def opencv_grabcut_once(img_feats_u8: np.ndarray,
@@ -193,7 +361,11 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
                     anns: np.ndarray,
                     gc_iters: int = 5,
                     tie_mode: str = "nearest-scribble",
-                    collect_models: bool = False
+                    collect_models: bool = False,
+                    improved: bool = False,
+                    img_rgb_u8: Optional[np.ndarray] = None,
+                    feats_converter: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+                    improved_params: Optional[ImprovedParams] = None
                     ) -> np.ndarray | Tuple[np.ndarray, Dict[int, Dict[str, np.ndarray]]]:
     """
     For each present class c > 1:
@@ -202,8 +374,9 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
     Combine binary masks into a single VOC index map where:
       output 0 = background, output 1..20 = foreground classes, map c -> c - 1.
 
-    New option:
+    New options:
       collect_models=True returns (final_mask, models_by_class) where models_by_class[c] = {'bgdModel': ..., 'fgdModel': ...}
+      improved=True enables SLIC + Bayes preprocessing per class using img_rgb_u8 and feats_converter for color conversion.
     """
     H, W = anns.shape
     classes = sorted([int(x) for x in np.unique(anns) if x > 1])
@@ -213,17 +386,28 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
             return empty, {}
         return empty
 
+    if improved and (img_rgb_u8 is None or feats_converter is None):
+        raise ValueError("Improved mode requires img_rgb_u8 and feats_converter.")
+
     fg_masks: Dict[int, np.ndarray] = {}
     models_by_class: Dict[int, Dict[str, np.ndarray]] = {}
 
     for c in classes:
         seeds_fg = (anns == c)
         seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
+
+        if improved:
+            ip = improved_params if improved_params is not None else ImprovedParams(enabled=False)
+            img_proc = improved_preprocess_rgb(img_rgb_u8, seeds_bg, seeds_fg, ip)
+            feats_for_gc = feats_converter(img_proc)
+        else:
+            feats_for_gc = img_feats_u8
+
         if collect_models:
-            y, bgm, fgm = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters, return_models=True)  # type: ignore
+            y, bgm, fgm = opencv_grabcut_once(feats_for_gc, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters, return_models=True)  # type: ignore
             models_by_class[c] = {"bgdModel": bgm, "fgdModel": fgm}
         else:
-            y = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters)  # type: ignore
+            y = opencv_grabcut_once(feats_for_gc, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters)  # type: ignore
         fg_masks[c] = y  # binary 0 or 1
 
     final = _combine_fg_masks_to_final(fg_masks, anns, tie_mode)
@@ -302,15 +486,18 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
                                       gc_iters: int = 5,
                                       tie_mode: str = "nearest-scribble",
                                       trio_parallel: bool = False,
-                                      trio_workers: int = 0) -> np.ndarray:
+                                      trio_workers: int = 0,
+                                      improved: bool = False,
+                                      improved_params: Optional[ImprovedParams] = None) -> np.ndarray:
     """
     Majority voting over a trio of color spaces on the binary masks, done before class label assignment.
 
     For each present class c > 1:
       1. Build FG and BG seeds from anns.
-      2. Convert the RGB image to each color space in the trio.
-      3. Run GrabCut per color space to get a binary mask.
-      4. Take per pixel majority vote over the three masks, threshold sum >= 2 to 1 else 0.
+      2. Optionally apply improved preprocessing on RGB using seeds.
+      3. Convert the image to each color space in the trio.
+      4. Run GrabCut per color space to get a binary mask.
+      5. Take per pixel majority vote over the three masks, threshold sum >= 2 to 1 else 0.
 
     When trio_parallel is True, the three color space runs are executed in parallel threads per class.
     trio_workers, if 0, defaults to len(trio).
@@ -332,9 +519,15 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
         seeds_fg = (anns == c)
         seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
 
+        if improved:
+            ip = improved_params if improved_params is not None else ImprovedParams(enabled=False)
+            img_for_cs = improved_preprocess_rgb(img_rgb_u8, seeds_bg, seeds_fg, ip)
+        else:
+            img_for_cs = img_rgb_u8
+
         if trio_parallel:
             def _run(cs: str) -> np.ndarray:
-                feats_cs = convert_color_space(img_rgb_u8, cs)
+                feats_cs = convert_color_space(img_for_cs, cs)
                 y_bin = opencv_grabcut_once(
                     feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=int(gc_iters)
                 )
@@ -346,7 +539,7 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
         else:
             votes = []
             for cs in trio:
-                feats_cs = convert_color_space(img_rgb_u8, cs)
+                feats_cs = convert_color_space(img_for_cs, cs)
                 y_bin = opencv_grabcut_once(
                     feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=int(gc_iters)
                 )
@@ -412,7 +605,13 @@ def _process_single_image(ann_path: str,
                           enable_majority_vote: bool,
                           ensemble_trio: str,
                           trio_parallel: bool,
-                          trio_workers: int) -> Dict[str, object]:
+                          trio_workers: int,
+                          improved_enabled: bool,
+                          slic_segments: int,
+                          slic_compactness: float,
+                          slic_sigma: float,
+                          bayes_space: str,
+                          region_vote: bool) -> Dict[str, object]:
     """Worker function to process a single image, safe for ProcessPoolExecutor."""
     ann_p = Path(ann_path)
     images_dir_p = Path(images_dir)
@@ -433,6 +632,15 @@ def _process_single_image(ann_path: str,
                          (img_rgb.shape[1], img_rgb.shape[0]),
                          interpolation=cv.INTER_NEAREST)
 
+    improved_params = ImprovedParams(
+        enabled=bool(improved_enabled),
+        slic_segments=int(slic_segments),
+        slic_compactness=float(slic_compactness),
+        slic_sigma=float(slic_sigma),
+        bayes_space=str(bayes_space),
+        region_vote=bool(region_vote),
+    )
+
     # run either majority ensemble or single space
     if enable_majority_vote:
         trio = [s.strip() for s in (ensemble_trio if ensemble_trio else "jzazbz,jzczhz,rgb").split(",")]
@@ -445,13 +653,20 @@ def _process_single_image(ann_path: str,
             gc_iters=int(gc_iters),
             tie_mode=tie_mode,
             trio_parallel=bool(trio_parallel),
-            trio_workers=int(trio_workers) if trio_workers else 0
+            trio_workers=int(trio_workers) if trio_workers else 0,
+            improved=bool(improved_enabled),
+            improved_params=improved_params
         )
         written = []  # no model export in ensemble path
     else:
-        img_feats = convert_color_space(img_rgb, color_space)
+        feats_converter = get_color_converter(color_space)
+        img_feats = convert_color_space(img_rgb, color_space)  # baseline features
         if emit_models:
-            pred, models_by_class = run_one_vs_rest(img_feats, anns, gc_iters=int(gc_iters), tie_mode=tie_mode, collect_models=True)  # type: ignore
+            pred, models_by_class = run_one_vs_rest(
+                img_feats, anns, gc_iters=int(gc_iters), tie_mode=tie_mode, collect_models=True,
+                improved=bool(improved_enabled), img_rgb_u8=img_rgb, feats_converter=feats_converter,
+                improved_params=improved_params
+            )  # type: ignore
             models_out_dir = Path(models_dir) if models_dir else (out_dir_p / "models")
             written = save_models_npz(
                 base=base,
@@ -463,10 +678,20 @@ def _process_single_image(ann_path: str,
                     "color_space": color_space,
                     "gc_iters": int(gc_iters),
                     "tie_mode": tie_mode,
+                    "improved": bool(improved_enabled),
+                    "slic_segments": int(slic_segments),
+                    "slic_compactness": float(slic_compactness),
+                    "slic_sigma": float(slic_sigma),
+                    "bayes_space": str(bayes_space),
+                    "region_vote": bool(region_vote),
                 },
             )
         else:
-            pred = run_one_vs_rest(img_feats, anns, gc_iters=int(gc_iters), tie_mode=tie_mode)  # type: ignore
+            pred = run_one_vs_rest(
+                img_feats, anns, gc_iters=int(gc_iters), tie_mode=tie_mode,
+                improved=bool(improved_enabled), img_rgb_u8=img_rgb, feats_converter=feats_converter,
+                improved_params=improved_params
+            )  # type: ignore
             written = []
 
     out_path = out_dir_p / f"{base}_index.png"
@@ -517,6 +742,17 @@ def parse_args(argv=None):
     ap.add_argument("--parallel", action="store_true", help="Enable parallel processing of images")
     ap.add_argument("--max_workers", type=int, default=0, help="Workers for parallel mode, 0 picks os.cpu_count()")
 
+    # improved preprocessing controls
+    ap.add_argument("--improved", action="store_true",
+                    help="Enable SLIC + Bayes + second SLIC preprocessing per class prior to GrabCut")
+    ap.add_argument("--slic_segments", type=int, default=1000, help="SLIC target number of segments")
+    ap.add_argument("--slic_compactness", type=float, default=15.0, help="SLIC compactness parameter")
+    ap.add_argument("--slic_sigma", type=float, default=0.8, help="SLIC Gaussian smoothing sigma")
+    ap.add_argument("--bayes_space", type=str, default="rgb", choices=["rgb", "lab"],
+                    help="Space for Bayes classification on the simplified image, default rgb per paper description.")
+    ap.add_argument("--region_vote", action="store_true",
+                    help="Majority vote Bayes labels within each superpixel before assigning class constant RGB.")
+
     return ap.parse_args(argv)
 
 
@@ -566,7 +802,9 @@ def main(argv=None):
                     bool(args.emit_models), str(models_out_dir) if args.emit_models and not args.enable_majority_vote else "",
                     bool(args.enable_majority_vote), str(args.ensemble_trio),
                     bool(trio_parallel_flag) and bool(args.enable_majority_vote),  # only matters for ensemble path
-                    int(args.ensemble_trio_workers)
+                    int(args.ensemble_trio_workers),
+                    bool(args.improved), int(args.slic_segments), float(args.slic_compactness), float(args.slic_sigma),
+                    str(args.bayes_space), bool(args.region_vote)
                 ): ann_path for ann_path in ann_files
             }
             for fut in tqdm(as_completed(futures), total=len(futures), unit="img", desc="GrabCut[par]"):
@@ -608,10 +846,19 @@ def main(argv=None):
                                      interpolation=cv.INTER_NEAREST)
 
                 written = []
+                improved_params = ImprovedParams(
+                    enabled=bool(args.improved),
+                    slic_segments=int(args.slic_segments),
+                    slic_compactness=float(args.slic_compactness),
+                    slic_sigma=float(args.slic_sigma),
+                    bayes_space=str(args.bayes_space),
+                    region_vote=bool(args.region_vote),
+                )
+
                 if args.enable_majority_vote:
                     trio = [s.strip() for s in (args.ensemble_trio if args.ensemble_trio else "jzazbz,jzczhz,rgb").split(",")]
                     if len(trio) != 3:
-                        raise ValueError("ensemble_trio must have exactly three comma separated color spaces")
+                        raise ValueError("ensemble_trio must have exactly 3 comma separated color spaces")
                     pred = run_one_vs_rest_majority_ensemble(
                         img_rgb_u8=img_rgb,
                         anns=anns,
@@ -619,12 +866,19 @@ def main(argv=None):
                         gc_iters=int(args.gc_iters),
                         tie_mode=args.tie_mode,
                         trio_parallel=bool(trio_parallel_flag),
-                        trio_workers=int(args.ensemble_trio_workers)
+                        trio_workers=int(args.ensemble_trio_workers),
+                        improved=bool(args.improved),
+                        improved_params=improved_params
                     )
                 else:
+                    feats_converter = get_color_converter(args.color_space)
                     img_feats = convert_color_space(img_rgb, args.color_space)
                     if args.emit_models:
-                        pred, models_by_class = run_one_vs_rest(img_feats, anns, gc_iters=int(args.gc_iters), tie_mode=args.tie_mode, collect_models=True)  # type: ignore
+                        pred, models_by_class = run_one_vs_rest(
+                            img_feats, anns, gc_iters=int(args.gc_iters), tie_mode=args.tie_mode, collect_models=True,
+                            improved=bool(args.improved), img_rgb_u8=img_rgb, feats_converter=feats_converter,
+                            improved_params=improved_params
+                        )  # type: ignore
                         written = save_models_npz(
                             base=base,
                             color_space=args.color_space,
@@ -635,10 +889,20 @@ def main(argv=None):
                                 "color_space": args.color_space,
                                 "gc_iters": int(args.gc_iters),
                                 "tie_mode": args.tie_mode,
+                                "improved": bool(args.improved),
+                                "slic_segments": int(args.slic_segments),
+                                "slic_compactness": float(args.slic_compactness),
+                                "slic_sigma": float(args.slic_sigma),
+                                "bayes_space": str(args.bayes_space),
+                                "region_vote": bool(args.region_vote),
                             },
                         )
                     else:
-                        pred = run_one_vs_rest(img_feats, anns, gc_iters=int(args.gc_iters), tie_mode=args.tie_mode)  # type: ignore
+                        pred = run_one_vs_rest(
+                            img_feats, anns, gc_iters=int(args.gc_iters), tie_mode=args.tie_mode,
+                            improved=bool(args.improved), img_rgb_u8=img_rgb, feats_converter=feats_converter,
+                            improved_params=improved_params
+                        )  # type: ignore
 
                 out_path = out_dir / f"{base}_index.png"
                 save_indexed_png(pred, str(out_path))
@@ -681,6 +945,12 @@ def main(argv=None):
             "emit_models": bool(args.emit_models) and not bool(args.enable_majority_vote),
             "models_dir": str(models_out_dir) if args.emit_models and not args.enable_majority_vote else None,
             "max_workers": int(args.max_workers if args.max_workers else (os.cpu_count() or 4) if args.parallel else 0),
+            "improved": bool(args.improved),
+            "slic_segments": int(args.slic_segments),
+            "slic_compactness": float(args.slic_compactness),
+            "slic_sigma": float(args.slic_sigma),
+            "bayes_space": str(args.bayes_space),
+            "region_vote": bool(args.region_vote),
         },
         "timing_ms_avg": (float(np.mean(times_ms)) if times_ms else None)
     }
