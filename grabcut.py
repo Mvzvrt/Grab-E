@@ -1,4 +1,3 @@
-# Filename: grabcut.py
 # -*- coding: utf-8 -*-
 
 """
@@ -48,6 +47,13 @@ Output mapping when saving:
     4) Orientation score is min(coverage_left, coverage_right) to favor balanced halves.
        Tie breaker is sum coverage, then total labeled pixels across both halves.
     5) If neither orientation is valid, skip cutting and process the full image.
+
+2025-10-03 Warm start change:
+- Added optional warm start that learns per class GrabCut GMMs on the full image first, then reuses those models for each half during dynamic cutting.
+- Works for both single color space and trio ensemble, models are learned once per color space.
+- New flags:
+    --warm_start, default false, when true, learn models on the full image before splitting.
+    --warm_start_iters, default 1, iterations for the warm start learning pass.
 """
 
 from __future__ import annotations
@@ -148,7 +154,9 @@ def opencv_grabcut_once(img_feats_u8: np.ndarray,
                         seeds_fg: np.ndarray,
                         iters: int = 2,
                         return_models: bool = False,
-                        return_mask_states: bool = False
+                        return_mask_states: bool = False,
+                        init_bgdModel: Optional[np.ndarray] = None,   # NEW
+                        init_fgdModel: Optional[np.ndarray] = None    # NEW
                         ) -> np.ndarray | Tuple[np.ndarray, np.ndarray, np.ndarray] | Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Run cv2.grabCut once with firm seeds and return a binary mask, 1 FG, 0 BG.
@@ -157,6 +165,7 @@ def opencv_grabcut_once(img_feats_u8: np.ndarray,
     New options:
       return_models, when True, returns (bin_mask, bgdModel, fgdModel)
       return_mask_states, when True with return_models, returns (bin_mask, bgdModel, fgdModel, raw_mask_states)
+      init_bgdModel, init_fgdModel, optional initial models to warm start the segmentation
 
     Notes:
       bgdModel, fgdModel are OpenCV 1x65 buffers, and the raw GrabCut mask uses labels {0=BGD,1=FGD,2=PR_BGD,3=PR_FGD}.
@@ -186,8 +195,8 @@ def opencv_grabcut_once(img_feats_u8: np.ndarray,
     mask[seeds_bg] = cv.GC_BGD
     mask[seeds_fg] = cv.GC_FGD
 
-    bgdModel = np.zeros((1, 65), np.float64)
-    fgdModel = np.zeros((1, 65), np.float64)
+    bgdModel = np.zeros((1, 65), np.float64) if init_bgdModel is None else init_bgdModel.copy()
+    fgdModel = np.zeros((1, 65), np.float64) if init_fgdModel is None else init_fgdModel.copy()
 
     try:
         cv.grabCut(img_feats_u8, mask, None, bgdModel, fgdModel, int(iters), cv.GC_INIT_WITH_MASK)
@@ -209,7 +218,8 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
                     anns: np.ndarray,
                     gc_iters: int = 5,
                     tie_mode: str = "nearest-scribble",
-                    collect_models: bool = False
+                    collect_models: bool = False,
+                    init_models_by_class: Optional[Dict[int, Dict[str, np.ndarray]]] = None  # NEW
                     ) -> np.ndarray | Tuple[np.ndarray, Dict[int, Dict[str, np.ndarray]]]:
     """
     For each present class c > 1:
@@ -220,6 +230,7 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
 
     New option:
       collect_models=True returns (final_mask, models_by_class) where models_by_class[c] = {'bgdModel': ..., 'fgdModel': ...}
+      init_models_by_class allows warm starting per class with previously learned GMMs
     """
     H, W = anns.shape
     classes = sorted([int(x) for x in np.unique(anns) if x > 1])
@@ -235,11 +246,24 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
     for c in classes:
         seeds_fg = (anns == c)
         seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
+
+        init_bgm = None
+        init_fgm = None
+        if init_models_by_class is not None and c in init_models_by_class:
+            init_bgm = init_models_by_class[c].get("bgdModel")
+            init_fgm = init_models_by_class[c].get("fgdModel")
+
         if collect_models:
-            y, bgm, fgm = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters, return_models=True)  # type: ignore
+            y, bgm, fgm = opencv_grabcut_once(
+                img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters, return_models=True,
+                init_bgdModel=init_bgm, init_fgdModel=init_fgm
+            )  # type: ignore
             models_by_class[c] = {"bgdModel": bgm, "fgdModel": fgm}
         else:
-            y = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters)  # type: ignore
+            y = opencv_grabcut_once(
+                img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters,
+                init_bgdModel=init_bgm, init_fgdModel=init_fgm
+            )  # type: ignore
         fg_masks[c] = y  # binary 0 or 1
 
     final = _combine_fg_masks_to_final(fg_masks, anns, tie_mode)
@@ -310,6 +334,37 @@ def _combine_fg_masks_to_final(fg_masks: Dict[int, np.ndarray],
     return final
 
 
+# ---------- warm start helpers ----------
+
+def learn_models_on_full_image(img_feats_u8: np.ndarray,
+                               anns: np.ndarray,
+                               gc_iters_warm: int = 1) -> Dict[int, Dict[str, np.ndarray]]:
+    """
+    Learn per class GMM models on the full image using a quick GrabCut pass.
+    Returns models_by_class[c] = {"bgdModel": ..., "fgdModel": ...}
+    Only classes c > 1 are considered.
+    """
+    H, W = anns.shape
+    classes = sorted([int(x) for x in np.unique(anns) if x > 1])
+    models_by_class: Dict[int, Dict[str, np.ndarray]] = {}
+    if not classes:
+        return models_by_class
+
+    for c in classes:
+        seeds_fg = (anns == c)
+        seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
+        # Minimal iterations to fit GMMs quickly
+        _, bgm, fgm = opencv_grabcut_once(
+            img_feats_u8,
+            seeds_bg=seeds_bg,
+            seeds_fg=seeds_fg,
+            iters=int(max(1, gc_iters_warm)),
+            return_models=True
+        )  # type: ignore
+        models_by_class[c] = {"bgdModel": bgm, "fgdModel": fgm}
+    return models_by_class
+
+
 # ---------- majority voting ensemble, one vs rest ----------
 
 def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
@@ -318,7 +373,9 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
                                       gc_iters: int = 5,
                                       tie_mode: str = "nearest-scribble",
                                       trio_parallel: bool = False,
-                                      trio_workers: int = 0) -> np.ndarray:
+                                      trio_workers: int = 0,
+                                      init_models_by_cs_then_class: Optional[Dict[str, Dict[int, Dict[str, np.ndarray]]]] = None  # NEW
+                                      ) -> np.ndarray:
     """
     Majority voting over a trio of color spaces on the binary masks, done before class label assignment.
 
@@ -348,25 +405,27 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
         seeds_fg = (anns == c)
         seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
 
-        if trio_parallel:
-            def _run(cs: str) -> np.ndarray:
-                feats_cs = convert_color_space(img_rgb_u8, cs)
-                y_bin = opencv_grabcut_once(
-                    feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=int(gc_iters)
-                )
-                return y_bin.astype(np.uint8)
+        def _run(cs: str) -> np.ndarray:
+            feats_cs = convert_color_space(img_rgb_u8, cs)
+            init_bgm = None
+            init_fgm = None
+            if init_models_by_cs_then_class is not None and cs in init_models_by_cs_then_class:
+                model_map = init_models_by_cs_then_class[cs]
+                if c in model_map:
+                    init_bgm = model_map[c].get("bgdModel")
+                    init_fgm = model_map[c].get("fgdModel")
+            y_bin = opencv_grabcut_once(
+                feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=int(gc_iters),
+                init_bgdModel=init_bgm, init_fgdModel=init_fgm
+            )
+            return y_bin.astype(np.uint8)
 
+        if trio_parallel:
             with ThreadPoolExecutor(max_workers=workers) as ex:
                 futures = [ex.submit(_run, cs) for cs in trio]
                 votes = [f.result() for f in futures]
         else:
-            votes = []
-            for cs in trio:
-                feats_cs = convert_color_space(img_rgb_u8, cs)
-                y_bin = opencv_grabcut_once(
-                    feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=int(gc_iters)
-                )
-                votes.append(y_bin.astype(np.uint8))
+            votes = [_run(cs) for cs in trio]
 
         stack = np.stack(votes, axis=2)
         y_majority = (stack.sum(axis=2) >= 2).astype(np.uint8)
@@ -489,14 +548,20 @@ def process_with_dynamic_cut(img_rgb: np.ndarray,
                              tie_mode: str,
                              trio_parallel: bool,
                              trio_workers: int,
-                             single_color_space: str) -> np.ndarray:
+                             single_color_space: str,
+                             warm_start: bool = False,              # NEW
+                             warm_start_iters: int = 1              # NEW
+                             ) -> np.ndarray:
     """
     Wrapper that decides orientation, optionally splits, runs either ensemble or single space on halves or whole,
     and merges results back if split.
     """
     H, W, _ = img_rgb.shape
 
-    def run_core(img_rgb_local: np.ndarray, anns_local: np.ndarray) -> np.ndarray:
+    def run_core(img_rgb_local: np.ndarray, anns_local: np.ndarray,
+                 init_models_single: Optional[Dict[int, Dict[str, np.ndarray]]] = None,
+                 init_models_by_cs_then_class: Optional[Dict[str, Dict[int, Dict[str, np.ndarray]]]] = None
+                 ) -> np.ndarray:
         if enable_majority_vote:
             return run_one_vs_rest_majority_ensemble(
                 img_rgb_u8=img_rgb_local,
@@ -505,11 +570,13 @@ def process_with_dynamic_cut(img_rgb: np.ndarray,
                 gc_iters=int(gc_iters),
                 tie_mode=tie_mode,
                 trio_parallel=trio_parallel,
-                trio_workers=trio_workers
+                trio_workers=trio_workers,
+                init_models_by_cs_then_class=init_models_by_cs_then_class
             )
         else:
             feats = convert_color_space(img_rgb_local, single_color_space)
-            return run_one_vs_rest(feats, anns_local, gc_iters=int(gc_iters), tie_mode=tie_mode)  # type: ignore
+            return run_one_vs_rest(feats, anns_local, gc_iters=int(gc_iters), tie_mode=tie_mode,
+                                   init_models_by_class=init_models_single)  # type: ignore
 
     if not use_dynamic_cut:
         return run_core(img_rgb, anns)
@@ -524,9 +591,30 @@ def process_with_dynamic_cut(img_rgb: np.ndarray,
     if orientation == "none":
         return run_core(img_rgb, anns)
 
+    # Optional warm start, learn once on full image
+    init_models_single: Optional[Dict[int, Dict[str, np.ndarray]]] = None
+    init_models_by_cs_then_class: Optional[Dict[str, Dict[int, Dict[str, np.ndarray]]]] = None
+    if warm_start:
+        if enable_majority_vote:
+            init_models_by_cs_then_class = {}
+            for cs in ensemble_trio:
+                feats_full = convert_color_space(img_rgb, cs)
+                init_models_by_cs_then_class[cs] = learn_models_on_full_image(
+                    feats_full, anns, gc_iters_warm=int(max(1, warm_start_iters))
+                )
+        else:
+            feats_full = convert_color_space(img_rgb, single_color_space)
+            init_models_single = learn_models_on_full_image(
+                feats_full, anns, gc_iters_warm=int(max(1, warm_start_iters))
+            )
+
     (img1, a1), (img2, a2) = split_image_and_anns(img_rgb, anns, orientation)
-    pred1 = run_core(img1, a1)
-    pred2 = run_core(img2, a2)
+    pred1 = run_core(img1, a1,
+                     init_models_single=init_models_single,
+                     init_models_by_cs_then_class=init_models_by_cs_then_class)
+    pred2 = run_core(img2, a2,
+                     init_models_single=init_models_single,
+                     init_models_by_cs_then_class=init_models_by_cs_then_class)
     merged = merge_masks(pred1, pred2, orientation, H, W)
 
     # Safety shape check and correction by padding or cropping to original size
@@ -555,7 +643,10 @@ def _process_single_image(ann_path: str,
                           enable_dynamic_cut: bool,
                           dynamic_cut_strict_bg: bool,
                           dynamic_cut_require_fg: bool,
-                          dynamic_cut_verbose: bool) -> Dict[str, object]:
+                          dynamic_cut_verbose: bool,
+                          warm_start: bool,                 # NEW
+                          warm_start_iters: int             # NEW
+                          ) -> Dict[str, object]:
     """Worker function to process a single image, safe for ProcessPoolExecutor."""
     ann_p = Path(ann_path)
     images_dir_p = Path(images_dir)
@@ -591,9 +682,11 @@ def _process_single_image(ann_path: str,
         ensemble_trio=trio,
         gc_iters=int(gc_iters),
         tie_mode=tie_mode,
-        trio_parallel=bool(trio_parallel) and bool(enable_majority_vote),
+        trio_parallel=trio_parallel and bool(enable_majority_vote),
         trio_workers=int(trio_workers) if trio_workers else 0,
-        single_color_space=color_space
+        single_color_space=color_space,
+        warm_start=bool(warm_start),
+        warm_start_iters=int(warm_start_iters)
     )
 
     out_path = out_dir_p / f"{base}_index.png"
@@ -649,6 +742,13 @@ def parse_args(argv=None):
     ap.add_argument("--dynamic_cut_verbose", action="store_true",
                     help="Print decision details for the dynamic cut.")
 
+    # warm start controls
+    ap.add_argument("--warm_start", type=lambda x: str(x).lower() not in {"0", "false", "no"},
+                    default=True,
+                    help="Learn GMMs on the full image first, reuse as initial models in halves.")
+    ap.add_argument("--warm_start_iters", type=int, default=1,
+                    help="Iterations for the warm start model learning on the full image, default 1.")
+
     ap.add_argument("--parallel", action="store_true", help="Enable parallel processing of images")
     ap.add_argument("--max_workers", type=int, default=0, help="Workers for parallel mode, 0 picks os.cpu_count()")
 
@@ -698,7 +798,9 @@ def main(argv=None):
                     bool(args.enable_dynamic_cut),
                     bool(args.dynamic_cut_strict_bg),
                     bool(args.dynamic_cut_require_fg),
-                    bool(args.dynamic_cut_verbose)
+                    bool(args.dynamic_cut_verbose),
+                    bool(args.warm_start),
+                    int(args.warm_start_iters)
                 ): ann_path for ann_path in ann_files
             }
             for fut in tqdm(as_completed(futures), total=len(futures), unit="img", desc="GrabCut[par]"):
@@ -755,7 +857,9 @@ def main(argv=None):
                     tie_mode=args.tie_mode,
                     trio_parallel=bool(trio_parallel_flag) and bool(args.enable_majority_vote),
                     trio_workers=int(args.ensemble_trio_workers),
-                    single_color_space=args.color_space
+                    single_color_space=args.color_space,
+                    warm_start=bool(args.warm_start),
+                    warm_start_iters=int(args.warm_start_iters)
                 )
 
                 out_path = out_dir / f"{base}_index.png"
@@ -796,6 +900,8 @@ def main(argv=None):
             "enable_dynamic_cut": bool(args.enable_dynamic_cut),
             "dynamic_cut_strict_bg": bool(args.dynamic_cut_strict_bg),
             "dynamic_cut_require_fg": bool(args.dynamic_cut_require_fg),
+            "warm_start": bool(args.warm_start),
+            "warm_start_iters": int(args.warm_start_iters),
             "parallel": bool(args.parallel),
             "max_workers": int(args.max_workers if args.max_workers else (os.cpu_count() or 4) if args.parallel else 0),
         },
