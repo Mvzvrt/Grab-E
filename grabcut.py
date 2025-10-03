@@ -478,6 +478,234 @@ def _process_single_image(ann_path: str,
 
 # ---------- CLI ----------
 
+# ---------- SSG-style initializer (saliency + SLIC + RG + DBSCAN) ----------
+
+from skimage.segmentation import slic
+from skimage.color import rgb2lab
+from skimage.feature import local_binary_pattern
+from sklearn.cluster import DBSCAN
+
+def _saliency_ft(rgb_u8: np.ndarray) -> np.ndarray:
+    """
+    Lightweight 'frequency-tuned' style saliency:
+    sal = sum_c (I_c - mean_c)^2 in Lab, normalize to [0,255].
+    This approximates a strong, smooth foreground map without external models.
+    """
+    lab = rgb2lab(rgb_u8.astype(np.float32) / 255.0)
+    mu = lab.reshape(-1, 3).mean(axis=0, keepdims=True)
+    d2 = ((lab.reshape(-1, 3) - mu) ** 2).sum(axis=1)
+    sal = d2.reshape(lab.shape[:2])
+    sal = (255.0 * (sal - sal.min()) / (sal.max() - sal.min() + 1e-8)).astype(np.uint8)
+    return sal
+
+def _slic_feats(rgb_u8: np.ndarray, sal_u8: np.ndarray, ns: int) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Return labels HxW int32, and per-superpixel 7D features:
+    [x_norm, y_norm, mean(sal), mean(LBP), mean(R), mean(G), mean(B)].
+    """
+    H, W = rgb_u8.shape[:2]
+    labels = slic(rgb_u8, n_segments=int(ns), compactness=10.0, start_label=0, channel_axis=2)
+    K = int(labels.max()) + 1
+
+    yy, xx = np.mgrid[0:H, 0:W]
+    # LBP on gray
+    gray = cv.cvtColor(rgb_u8, cv.COLOR_RGB2GRAY)
+    lbp = local_binary_pattern(gray, P=8, R=1, method="uniform").astype(np.float32)
+
+    feats = np.zeros((K, 7), dtype=np.float32)
+    for k in range(K):
+        m = (labels == k)
+        if not np.any(m):
+            continue
+        # means
+        x_mean = float(xx[m].mean()) / max(1, W)
+        y_mean = float(yy[m].mean()) / max(1, H)
+        sal_mean = float(sal_u8[m].mean()) / 255.0
+        lbp_mean = float(lbp[m].mean()) / lbp.max() if lbp.max() > 0 else 0.0
+        r_mean = float(rgb_u8[..., 0][m].mean()) / 255.0
+        g_mean = float(rgb_u8[..., 1][m].mean()) / 255.0
+        b_mean = float(rgb_u8[..., 2][m].mean()) / 255.0
+        feats[k] = [x_mean, y_mean, sal_mean, lbp_mean, r_mean, g_mean, b_mean]
+    return labels.astype(np.int32), feats
+
+def _region_growing_on_superpixels(rgb_u8: np.ndarray, labels: np.ndarray, TR: float) -> np.ndarray:
+    """
+    Simple superpixel-level region growing by Lab color distance threshold TR.
+    Returns integer region ids same shape as labels, contiguous from 0..R-1.
+    """
+    H, W = labels.shape
+    K = int(labels.max()) + 1
+    lab = rgb2lab(rgb_u8.astype(np.float32) / 255.0)
+    # per superpixel Lab mean
+    sp_mean = np.zeros((K, 3), dtype=np.float32)
+    for k in range(K):
+        m = (labels == k)
+        if np.any(m):
+            sp_mean[k] = lab[m].mean(axis=0)
+
+    # build adjacency by 4-neighborhood
+    adj = [[] for _ in range(K)]
+    for y in range(H - 1):
+        for x in range(W - 1):
+            a = labels[y, x]
+            b = labels[y + 1, x]
+            c = labels[y, x + 1]
+            if a != b:
+                adj[a].append(b); adj[b].append(a)
+            if a != c:
+                adj[a].append(c); adj[c].append(a)
+    for k in range(K):
+        if adj[k]:
+            adj[k] = list(set(adj[k]))
+
+    visited = np.zeros(K, dtype=bool)
+    region_id = np.full(K, -1, dtype=np.int32)
+    rid = 0
+    for seed in range(K):
+        if visited[seed]:
+            continue
+        # start new region
+        stack = [seed]
+        visited[seed] = True
+        region_id[seed] = rid
+        while stack:
+            u = stack.pop()
+            for v in adj[u]:
+                if visited[v]:
+                    continue
+                d = np.linalg.norm(sp_mean[u] - sp_mean[v])
+                if d <= TR:
+                    visited[v] = True
+                    region_id[v] = rid
+                    stack.append(v)
+        rid += 1
+
+    # map back to pixel grid
+    out = np.zeros_like(labels, dtype=np.int32)
+    for k in range(K):
+        out[labels == k] = region_id[k]
+    return out
+
+def _dbscan_on_superpixels(feats7: np.ndarray, eps: float, minpts: int) -> np.ndarray:
+    """
+    DBSCAN in 7D feature space over superpixels, returns 1D labels, -1 for noise.
+    """
+    X = feats7.astype(np.float32)
+    db = DBSCAN(eps=float(eps), min_samples=int(minpts), metric="euclidean", n_jobs=1)
+    lab = db.fit_predict(X)
+    return lab.astype(np.int32)
+
+def _fuse_make_seeds(rgb_u8: np.ndarray,
+                     sal_u8: np.ndarray,
+                     sp_labels: np.ndarray,
+                     rg_regions: np.ndarray,
+                     db_lab: np.ndarray,
+                     TL: float,
+                     TH: float) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Implements the paper’s fusion logic at a practical level:
+    1) average saliency over RG regions then threshold with TL, TH to OBP, OFP, UP states,
+    2) roll DBSCAN region decision into UP areas with a per-superpixel Otsu on saliency to PBP, PFP,
+    3) return definitive BG seeds from OBP and definitive FG seeds from OFP.
+    """
+    H, W = sp_labels.shape
+    # 1) region saliency averages over RG
+    rg_ids = int(rg_regions.max()) + 1
+    rg_mean = np.zeros(rg_ids, dtype=np.float32)
+    for rid in range(rg_ids):
+        m = (rg_regions == rid)
+        if np.any(m):
+            rg_mean[rid] = sal_u8[m].mean() / 255.0
+
+    # TL and TH are area-ratio driven bounds in the paper, we expose them directly as in the tables.
+    # OBP if mean<=TL, OFP if mean>=TH, else UP.
+    OBP = np.zeros((H, W), dtype=bool)
+    OFP = np.zeros((H, W), dtype=bool)
+    UP  = np.zeros((H, W), dtype=bool)
+    for rid in range(rg_ids):
+        m = (rg_regions == rid)
+        val = rg_mean[rid]
+        if val <= TL:
+            OBP[m] = True
+        elif val >= TH:
+            OFP[m] = True
+        else:
+            UP[m] = True
+
+    # 2) refine UP using DBSCAN label per SLIC superpixel with an Otsu split on per-SP saliency
+    # map DBSCAN label per superpixel to pixels
+    from skimage.filters import threshold_otsu
+    if np.any(UP):
+        # per superpixel mean saliency
+        K = int(sp_labels.max()) + 1
+        sp_sal = np.zeros(K, dtype=np.float32)
+        for k in range(K):
+            msp = (sp_labels == k)
+            if np.any(msp):
+                sp_sal[k] = sal_u8[msp].mean() / 255.0
+        # per cluster mask in UP area, then Otsu on the SP means inside UP
+        for k in range(K):
+            msp = (sp_labels == k) & UP
+            if not np.any(msp):
+                continue
+        try:
+            th = threshold_otsu(sp_sal)
+        except Exception:
+            th = float(sp_sal.mean())
+        PFP = (UP) & (sp_sal[sp_labels] > th)
+        PBP = (UP) & (~PFP)
+    else:
+        PFP = np.zeros_like(UP)
+        PBP = np.zeros_like(UP)
+
+    # 3) definitive seeds for GrabCut
+    seeds_bg = OBP.copy()
+    seeds_fg = OFP.copy()
+    return seeds_bg, seeds_fg
+
+def run_ssg_once(img_rgb_u8: np.ndarray,
+                 gc_iters: int,
+                 ns: int,
+                 TR: float,
+                 eps: float,
+                 minpts: int,
+                 TL: float,
+                 TH: float,
+                 tie_mode: str,
+                 anns: np.ndarray) -> np.ndarray:
+    """
+    Full SSG initializer then a single OpenCV GrabCut pass.
+    We still respect your one-vs-rest multi-class stitching, so anns provides FG/BG seeds per class.
+    """
+    # Build saliency and SLIC once
+    sal = _saliency_ft(img_rgb_u8)
+    sp_labels, feats7 = _slic_feats(img_rgb_u8, sal, ns=ns)
+
+    # Region growing and DBSCAN at superpixel-level
+    rg_regions = _region_growing_on_superpixels(img_rgb_u8, sp_labels, TR=float(TR))
+    db_lab = _dbscan_on_superpixels(feats7, eps=float(eps), minpts=int(minpts))
+
+    H, W = anns.shape
+    classes = sorted([int(x) for x in np.unique(anns) if x > 1])
+    if not classes:
+        return np.zeros((H, W), dtype=np.uint8)
+
+    fg_masks: Dict[int, np.ndarray] = {}
+    for c in classes:
+        # build strict seeds from SSG fusion, but also intersect with provided class annotations, for stability
+        seeds_bg_ssg, seeds_fg_ssg = _fuse_make_seeds(img_rgb_u8, sal, sp_labels, rg_regions, db_lab, TL=float(TL), TH=float(TH))
+
+        # intersect class scribbles, keep semantics of your wrapper
+        seeds_fg = (anns == c) | ((anns > 1) & (anns == c)) | seeds_fg_ssg
+        seeds_bg = (anns == 1) | ((anns > 1) & (anns != c)) | seeds_bg_ssg
+
+        y_bin = opencv_grabcut_once(img_rgb_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=int(gc_iters))
+        fg_masks[c] = y_bin.astype(np.uint8)
+
+    final = _combine_fg_masks_to_final(fg_masks, anns, tie_mode)
+    return final
+
+
 def parse_args(argv=None):
     ap = argparse.ArgumentParser("GrabCut batch CLI, OpenCV backend, one vs rest")
     ap.add_argument("--images_dir", type=str, required=True)
@@ -516,6 +744,16 @@ def parse_args(argv=None):
 
     ap.add_argument("--parallel", action="store_true", help="Enable parallel processing of images")
     ap.add_argument("--max_workers", type=int, default=0, help="Workers for parallel mode, 0 picks os.cpu_count()")
+
+    ap.add_argument("--init_ssg", action="store_true",
+                    help="Enable SSG-style initialization, then one OpenCV GrabCut pass.")
+    ap.add_argument("--ssg_ns", type=int, default=400, help="SLIC superpixels, default 400")
+    ap.add_argument("--ssg_tr", type=float, default=700.0, help="Region growing Lab distance threshold, larger merges more")
+    ap.add_argument("--ssg_eps", type=float, default=0.13, help="DBSCAN eps in 7D feature space")
+    ap.add_argument("--ssg_minpts", type=int, default=3, help="DBSCAN minPts")
+    ap.add_argument("--ssg_tl", type=float, default=0.30, help="Lower area ratio bound for saliency fusion")
+    ap.add_argument("--ssg_th", type=float, default=0.95, help="Upper area ratio bound for saliency fusion")
+
 
     return ap.parse_args(argv)
 
@@ -608,7 +846,18 @@ def main(argv=None):
                                      interpolation=cv.INTER_NEAREST)
 
                 written = []
-                if args.enable_majority_vote:
+                if args.init_ssg:
+                    pred = run_ssg_once(
+                        img_rgb_u8=img_rgb,
+                        gc_iters=int(args.gc_iters),
+                        ns=int(args.ssg_ns), TR=float(args.ssg_tr),
+                        eps=float(args.ssg_eps), minpts=int(args.ssg_minpts),
+                        TL=float(args.ssg_tl), TH=float(args.ssg_th),
+                        tie_mode=str(args.tie_mode),
+                        anns=anns
+                    )
+                    written = []
+                elif args.enable_majority_vote:
                     trio = [s.strip() for s in (args.ensemble_trio if args.ensemble_trio else "jzazbz,jzczhz,rgb").split(",")]
                     if len(trio) != 3:
                         raise ValueError("ensemble_trio must have exactly three comma separated color spaces")
@@ -681,6 +930,13 @@ def main(argv=None):
             "emit_models": bool(args.emit_models) and not bool(args.enable_majority_vote),
             "models_dir": str(models_out_dir) if args.emit_models and not args.enable_majority_vote else None,
             "max_workers": int(args.max_workers if args.max_workers else (os.cpu_count() or 4) if args.parallel else 0),
+            "init_ssg": bool(args.init_ssg),
+            "ssg_ns": int(args.ssg_ns),
+            "ssg_tr": float(args.ssg_tr),
+            "ssg_eps": float(args.ssg_eps),
+            "ssg_minpts": int(args.ssg_minpts),
+            "ssg_tl": float(args.ssg_tl),
+            "ssg_th": float(args.ssg_th),
         },
         "timing_ms_avg": (float(np.mean(times_ms)) if times_ms else None)
     }
