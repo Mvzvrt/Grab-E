@@ -50,6 +50,8 @@ import cv2 as cv
 from PIL import Image
 from tqdm import tqdm
 
+from ao import ao_refine_seeds
+
 # ---------- constants / palette ----------
 NUM_VOC_CLASSES = 21
 _IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
@@ -219,6 +221,8 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
     for c in classes:
         seeds_fg = (anns == c)
         seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
+        seeds_fg, seeds_bg = ao_refine_seeds(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg)
+
         if collect_models:
             y, bgm, fgm = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters, return_models=True)  # type: ignore
             models_by_class[c] = {"bgdModel": bgm, "fgdModel": fgm}
@@ -335,9 +339,8 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
         if trio_parallel:
             def _run(cs: str) -> np.ndarray:
                 feats_cs = convert_color_space(img_rgb_u8, cs)
-                y_bin = opencv_grabcut_once(
-                    feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=int(gc_iters)
-                )
+                sfg, sbg = ao_refine_seeds(feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg)
+                y_bin = opencv_grabcut_once(feats_cs, seeds_bg=sbg, seeds_fg=sfg, iters=gc_iters)
                 return y_bin.astype(np.uint8)
 
             with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -347,9 +350,8 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
             votes = []
             for cs in trio:
                 feats_cs = convert_color_space(img_rgb_u8, cs)
-                y_bin = opencv_grabcut_once(
-                    feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=int(gc_iters)
-                )
+                sfg, sbg = ao_refine_seeds(feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg)
+                y_bin = opencv_grabcut_once(feats_cs, seeds_bg=sbg, seeds_fg=sfg, iters=gc_iters)
                 votes.append(y_bin.astype(np.uint8))
 
         stack = np.stack(votes, axis=2)
