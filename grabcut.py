@@ -50,6 +50,8 @@ import cv2 as cv
 from PIL import Image
 from tqdm import tqdm
 
+from modified_grabcut_pre import pre_grabcut_median_kmeans
+
 # ---------- constants / palette ----------
 NUM_VOC_CLASSES = 21
 _IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
@@ -149,6 +151,8 @@ def opencv_grabcut_once(img_feats_u8: np.ndarray,
         img_feats_u8 = np.clip(img_feats_u8, 0, 255).astype(np.uint8)
     if img_feats_u8.ndim != 3 or img_feats_u8.shape[2] != 3:
         raise ValueError(f"Expected HxWx3, got shape {img_feats_u8.shape}")
+    
+    img_feats_u8 = pre_grabcut_median_kmeans(img_feats_u8)
 
     H, W, _ = img_feats_u8.shape
 
