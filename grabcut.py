@@ -51,6 +51,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from modified_grabcut_pre import pre_grabcut_median_kmeans
+import matplotlib.pyplot as plt
 
 # ---------- constants / palette ----------
 NUM_VOC_CLASSES = 21
@@ -152,7 +153,10 @@ def opencv_grabcut_once(img_feats_u8: np.ndarray,
     if img_feats_u8.ndim != 3 or img_feats_u8.shape[2] != 3:
         raise ValueError(f"Expected HxWx3, got shape {img_feats_u8.shape}")
     
-    img_feats_u8 = pre_grabcut_median_kmeans(img_feats_u8)
+    # plt.figure("After pre_grabcut_median_kmeans and color space conversion")
+    # plt.imshow(img_feats_u8)
+    # plt.axis('off')
+    # plt.show()
 
     H, W, _ = img_feats_u8.shape
 
@@ -436,6 +440,13 @@ def _process_single_image(ann_path: str,
         anns = cv.resize(anns.astype(np.int32),
                          (img_rgb.shape[1], img_rgb.shape[0]),
                          interpolation=cv.INTER_NEAREST)
+        
+    img_rgb = pre_grabcut_median_kmeans(img_rgb, k=8, median_ksize=3)
+
+    # plt.figure("After pre_grabcut_median_kmeans on input image")
+    # plt.imshow(img_rgb)
+    # plt.axis('off')
+    # plt.show()
 
     # run either majority ensemble or single space
     if enable_majority_vote:
