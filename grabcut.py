@@ -50,6 +50,8 @@ import cv2 as cv
 from PIL import Image
 from tqdm import tqdm
 
+from clahe_preprocess import apply_clahe
+
 # ---------- constants / palette ----------
 NUM_VOC_CLASSES = 21
 _IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
@@ -425,6 +427,8 @@ def _process_single_image(ann_path: str,
 
     t0 = perf_counter()
     img_rgb = load_img(img_path)
+    # CLAHE preprocessing, default uses LAB L channel
+    img_rgb = apply_clahe(img_rgb, method="lab_l", clip_limit=2.0, tile_grid_size=(8, 8))
     anns = load_anns(ann_p)
 
     # resize anns to match image if needed
@@ -600,6 +604,8 @@ def main(argv=None):
             try:
                 t0 = perf_counter()
                 img_rgb = load_img(img_path)
+                # CLAHE preprocessing, default uses LAB L channel
+                img_rgb = apply_clahe(img_rgb, method="lab_l", clip_limit=2.0, tile_grid_size=(8, 8))
                 anns = load_anns(ann_path)
 
                 if anns.shape[:2] != img_rgb.shape[:2]:
