@@ -51,6 +51,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from modified_grabcut_pre import pre_grabcut_median_kmeans
+from tight_roi_pre import build_tight_roi
 import matplotlib.pyplot as plt
 
 # ---------- constants / palette ----------
@@ -177,6 +178,22 @@ def opencv_grabcut_once(img_feats_u8: np.ndarray,
     mask = np.full((H, W), cv.GC_PR_BGD, dtype=np.uint8)
     mask[seeds_bg] = cv.GC_BGD
     mask[seeds_fg] = cv.GC_FGD
+
+    # build a tight ROI from the scribbles, then force outside to definite background
+    roi_mask = build_tight_roi(
+        seeds_fg.astype(np.uint8),
+        seeds_bg.astype(np.uint8),
+        margin=50,
+        method="components_rect",     # one ROI around the union of all strokes
+        dilate_px=10,
+        include_bg=True
+    )
+    mask[~roi_mask] = cv.GC_BGD
+
+    # plt.figure("ROI Mask")
+    # plt.imshow(roi_mask)
+    # plt.axis('off')
+    # plt.show()
 
     bgdModel = np.zeros((1, 65), np.float64)
     fgdModel = np.zeros((1, 65), np.float64)
