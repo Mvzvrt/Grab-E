@@ -50,6 +50,8 @@ import cv2 as cv
 from PIL import Image
 from tqdm import tqdm
 
+from ms_features_preprocess import ms_feature_from_space, ms_feature_from_features
+
 # ---------- constants / palette ----------
 NUM_VOC_CLASSES = 21
 _IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
@@ -334,7 +336,7 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
 
         if trio_parallel:
             def _run(cs: str) -> np.ndarray:
-                feats_cs = convert_color_space(img_rgb_u8, cs)
+                feats_cs = ms_feature_from_space(img_rgb_u8, cs)
                 y_bin = opencv_grabcut_once(
                     feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=int(gc_iters)
                 )
@@ -346,7 +348,7 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
         else:
             votes = []
             for cs in trio:
-                feats_cs = convert_color_space(img_rgb_u8, cs)
+                feats_cs = ms_feature_from_space(img_rgb_u8, cs)
                 y_bin = opencv_grabcut_once(
                     feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=int(gc_iters)
                 )
@@ -449,7 +451,7 @@ def _process_single_image(ann_path: str,
         )
         written = []  # no model export in ensemble path
     else:
-        img_feats = convert_color_space(img_rgb, color_space)
+        img_feats = ms_feature_from_space(img_rgb, color_space)
         if emit_models:
             pred, models_by_class = run_one_vs_rest(img_feats, anns, gc_iters=int(gc_iters), tie_mode=tie_mode, collect_models=True)  # type: ignore
             models_out_dir = Path(models_dir) if models_dir else (out_dir_p / "models")
@@ -622,7 +624,7 @@ def main(argv=None):
                         trio_workers=int(args.ensemble_trio_workers)
                     )
                 else:
-                    img_feats = convert_color_space(img_rgb, args.color_space)
+                    img_feats = ms_feature_from_space(img_rgb, args.color_space)
                     if args.emit_models:
                         pred, models_by_class = run_one_vs_rest(img_feats, anns, gc_iters=int(args.gc_iters), tie_mode=args.tie_mode, collect_models=True)  # type: ignore
                         written = save_models_npz(
