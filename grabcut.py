@@ -50,7 +50,7 @@ import cv2 as cv
 from PIL import Image
 from tqdm import tqdm
 
-from ao import ao_refine_seeds
+from ao import ao_refine_seeds, ao_post_smooth_mask
 
 # ---------- constants / palette ----------
 NUM_VOC_CLASSES = 21
@@ -225,9 +225,11 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
 
         if collect_models:
             y, bgm, fgm = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters, return_models=True)  # type: ignore
+            y = ao_post_smooth_mask(img_feats_u8, y)
             models_by_class[c] = {"bgdModel": bgm, "fgdModel": fgm}
         else:
             y = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters)  # type: ignore
+            y = ao_post_smooth_mask(img_feats_u8, y)
         fg_masks[c] = y  # binary 0 or 1
 
     final = _combine_fg_masks_to_final(fg_masks, anns, tie_mode)
@@ -341,6 +343,7 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
                 feats_cs = convert_color_space(img_rgb_u8, cs)
                 sfg, sbg = ao_refine_seeds(feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg)
                 y_bin = opencv_grabcut_once(feats_cs, seeds_bg=sbg, seeds_fg=sfg, iters=gc_iters)
+                y_bin = ao_post_smooth_mask(feats_cs, y_bin)
                 return y_bin.astype(np.uint8)
 
             with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -352,6 +355,7 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
                 feats_cs = convert_color_space(img_rgb_u8, cs)
                 sfg, sbg = ao_refine_seeds(feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg)
                 y_bin = opencv_grabcut_once(feats_cs, seeds_bg=sbg, seeds_fg=sfg, iters=gc_iters)
+                y_bin = ao_post_smooth_mask(feats_cs, y_bin)
                 votes.append(y_bin.astype(np.uint8))
 
         stack = np.stack(votes, axis=2)
