@@ -51,6 +51,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from ao import ao_refine_seeds, ao_post_smooth_mask
+from multi_cue_gmm import mc_refine_seeds
 
 # ---------- constants / palette ----------
 NUM_VOC_CLASSES = 21
