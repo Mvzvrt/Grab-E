@@ -222,7 +222,7 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
     for c in classes:
         seeds_fg = (anns == c)
         seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
-        seeds_fg, seeds_bg = ao_refine_seeds(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg)
+        seeds_fg, seeds_bg = mc_refine_seeds(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg)
 
         if collect_models:
             y, bgm, fgm = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters, return_models=True)  # type: ignore
@@ -342,7 +342,7 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
         if trio_parallel:
             def _run(cs: str) -> np.ndarray:
                 feats_cs = convert_color_space(img_rgb_u8, cs)
-                sfg, sbg = ao_refine_seeds(feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg)
+                sfg, sbg = mc_refine_seeds(feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg)
                 y_bin = opencv_grabcut_once(feats_cs, seeds_bg=sbg, seeds_fg=sfg, iters=gc_iters)
                 y_bin = ao_post_smooth_mask(feats_cs, y_bin)
                 return y_bin.astype(np.uint8)
@@ -354,7 +354,7 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
             votes = []
             for cs in trio:
                 feats_cs = convert_color_space(img_rgb_u8, cs)
-                sfg, sbg = ao_refine_seeds(feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg)
+                sfg, sbg = mc_refine_seeds(feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg)
                 y_bin = opencv_grabcut_once(feats_cs, seeds_bg=sbg, seeds_fg=sfg, iters=gc_iters)
                 y_bin = ao_post_smooth_mask(feats_cs, y_bin)
                 votes.append(y_bin.astype(np.uint8))
