@@ -51,6 +51,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from ao import ao_refine_seeds, ao_post_smooth_mask
+from doe_grabcut import doe_limit_seeds
 
 # ---------- constants / palette ----------
 NUM_VOC_CLASSES = 21
@@ -221,6 +222,11 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
     for c in classes:
         seeds_fg = (anns == c)
         seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
+        seeds_fg, seeds_bg, _roi = doe_limit_seeds(
+            img_feats_u8,  # or pass original RGB if you prefer, see note below
+            seeds_fg=seeds_fg,
+            seeds_bg=seeds_bg,
+        )
         seeds_fg, seeds_bg = ao_refine_seeds(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg)
 
         if collect_models:
@@ -337,6 +343,14 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
     for c in classes:
         seeds_fg = (anns == c)
         seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
+        
+        from doe_grabcut import compute_doe_map, select_roi_from_doe
+        doe = compute_doe_map(img_rgb_u8)
+        roi_mask, _bbox = select_roi_from_doe(doe)
+
+        inside = roi_mask.astype(bool)
+        seeds_fg = seeds_fg & inside
+        seeds_bg = seeds_bg | (~inside)
 
         if trio_parallel:
             def _run(cs: str) -> np.ndarray:
