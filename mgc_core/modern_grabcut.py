@@ -47,6 +47,15 @@ from . import fastgeo
 from skimage.segmentation import slic
 # Structured Forests edge detector (opencv-contrib)
 _XIMGPROC = cv.ximgproc  # type: ignore[attr-defined]
+# cache SED detector per model path
+_SED_CACHE = {}
+
+def _get_sed(model_path: str):
+    sed = _SED_CACHE.get(model_path)
+    if sed is None:
+        sed = cv.ximgproc.createStructuredEdgeDetection(model_path)
+        _SED_CACHE[model_path] = sed
+    return sed
 
 # ---------- constants / palette ----------
 NUM_VOC_CLASSES = 21
@@ -199,9 +208,9 @@ def edges_structured_forests(img_rgb: np.ndarray, model_path: Optional[str]) -> 
     if not model_path or not Path(model_path).exists():
         raise FileNotFoundError("Structured Forests model file not found (set --structured_model).")
     bgr = cv.cvtColor(img_rgb, cv.COLOR_RGB2BGR).astype(np.float32) / 255.0
-    sed = cv.ximgproc.createStructuredEdgeDetection(model_path)
+    sed = _get_sed(model_path)
     E = sed.detectEdges(bgr).astype(np.float32)
-    O = sed.computeOrientation(E).astype(np.float32)            # HxW, 0..1
+    O = sed.computeOrientation(E).astype(np.float32)
     if hasattr(sed, "edgesNms"):
         E = sed.edgesNms(E, O)
     m = float(E.max()) + 1e-6
@@ -345,7 +354,16 @@ def seeds_confidence_lab(img_rgb: np.ndarray, seeds_fg: np.ndarray, seeds_bg: np
 
     ll_f = gauss_ll(lab, mu_f, sf)
     ll_b = gauss_ll(lab, mu_b, sb)
-    post = 1.0 / (1.0 + np.exp(-(ll_f - ll_b)))
+    # numerically stable sigmoid on ll_f - ll_b
+    delta = (ll_f - ll_b).astype(np.float32)
+    # clamp to avoid overflow and underflow in exp
+    delta = np.clip(delta, -60.0, 60.0)
+    # stable sigmoid, no overflow
+    post = np.where(delta >= 0.0,
+                    1.0 / (1.0 + np.exp(-delta)),
+                    np.exp(delta) / (1.0 + np.exp(delta)))
+    # guard NaNs, just in case
+    post = np.nan_to_num(post, nan=0.0, posinf=1.0, neginf=0.0).astype(np.float32)
     mask = (post >= float(tau))
     if return_score:
         return mask, post.astype(np.float32)

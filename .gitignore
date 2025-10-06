@@ -1,4 +1,4 @@
 .gc
 __pycache__/
 mgc_core/build/
-test/
+masks/

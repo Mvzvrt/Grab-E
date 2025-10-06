@@ -31,6 +31,14 @@ import cv2 as cv
 # Adjust this import to your tree.
 import mgc_core.modern_grabcut as mgc  # type: ignore
 
+# micro cache for the most recent edge map, keyed by data pointer and shape
+_LAST_E_KEY = None
+_LAST_E_VAL = None
+
+def _edge_key(img: np.ndarray) -> tuple:
+    ptr = int(img.__array_interface__['data'][0])
+    return (ptr, img.shape[0], img.shape[1], img.strides)
+
 
 
 # ---------- Defaults mirroring modern_grabcut CLI ----------
@@ -78,14 +86,20 @@ def ao_refine_seeds(img_rgb_u8: np.ndarray,
     p.update(kwargs or {})
 
     # Build edge map once per image, geometry is tied to RGB
-    E = mgc.get_edge_map(
-        img_rgb_u8,
-        edge_backend=p["edge_backend"],
-        structured_model=p["structured_model"],
-        use_texture=bool(p["texture_edges"]),
-        dbg=None,
-        tag="edge_map.png"
-    )
+    key = _edge_key(img_rgb_u8)
+    global _LAST_E_KEY, _LAST_E_VAL
+    if _LAST_E_KEY == key and _LAST_E_VAL is not None:
+        E = _LAST_E_VAL
+    else:
+        E = mgc.get_edge_map(
+            img_rgb_u8,
+            edge_backend=p["edge_backend"],
+            structured_model=p["structured_model"],
+            use_texture=bool(p["texture_edges"]),
+            dbg=None,
+            tag="edge_map.png"
+        )
+        _LAST_E_KEY, _LAST_E_VAL = key, E
 
     # Confidence image, this lets the chosen color space influence refinement
     conf = img_rgb_u8 if conf_img is None else conf_img
@@ -126,14 +140,20 @@ def ao_post_smooth_mask(img_rgb_u8: np.ndarray,
     p.update(kwargs or {})
 
     # Edge map for cleanup preservation
-    E = mgc.get_edge_map(
-        img_rgb_u8,
-        edge_backend=p["edge_backend"],
-        structured_model=p["structured_model"],
-        use_texture=bool(p["texture_edges"]),
-        dbg=None,
-        tag="edge_map.png"
-    )
+    key = _edge_key(img_rgb_u8)
+    global _LAST_E_KEY, _LAST_E_VAL
+    if _LAST_E_KEY == key and _LAST_E_VAL is not None:
+        E = _LAST_E_VAL
+    else:
+        E = mgc.get_edge_map(
+            img_rgb_u8,
+            edge_backend=p["edge_backend"],
+            structured_model=p["structured_model"],
+            use_texture=bool(p["texture_edges"]),
+            dbg=None,
+            tag="edge_map.png"
+        )
+        _LAST_E_KEY, _LAST_E_VAL = key, E
 
     y = (bin_mask01.astype(np.uint8) > 0).astype(np.uint8)
 
