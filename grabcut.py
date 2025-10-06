@@ -50,7 +50,9 @@ import cv2 as cv
 from PIL import Image
 from tqdm import tqdm
 
-from ao import ao_refine_seeds, ao_post_smooth_mask
+import sys, pathlib
+sys.path.append(str(pathlib.Path(__file__).parent / "mgc_core"))
+from gc_prepost import ao_refine_seeds, ao_post_smooth_mask
 
 # ---------- constants / palette ----------
 NUM_VOC_CLASSES = 21
@@ -192,11 +194,11 @@ def opencv_grabcut_once(img_feats_u8: np.ndarray,
 # ---------- multi class wrapper, one vs rest ----------
 
 def run_one_vs_rest(img_feats_u8: np.ndarray,
+                    img_rgb_u8: np.ndarray,
                     anns: np.ndarray,
                     gc_iters: int = 5,
                     tie_mode: str = "nearest-scribble",
-                    collect_models: bool = False
-                    ) -> np.ndarray | Tuple[np.ndarray, Dict[int, Dict[str, np.ndarray]]]:
+                    collect_models: bool = False):
     """
     For each present class c > 1:
       FG seeds = anns == c
@@ -221,15 +223,15 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
     for c in classes:
         seeds_fg = (anns == c)
         seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
-        seeds_fg, seeds_bg = ao_refine_seeds(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg)
+        seeds_fg, seeds_bg = ao_refine_seeds(img_rgb_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, conf_img=img_feats_u8)
 
         if collect_models:
             y, bgm, fgm = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters, return_models=True)  # type: ignore
-            y = ao_post_smooth_mask(img_feats_u8, y)
+            y = ao_post_smooth_mask(img_rgb_u8, y, guide_img=img_rgb_u8)
             models_by_class[c] = {"bgdModel": bgm, "fgdModel": fgm}
         else:
             y = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters)  # type: ignore
-            y = ao_post_smooth_mask(img_feats_u8, y)
+            y = ao_post_smooth_mask(img_rgb_u8, y, guide_img=img_rgb_u8)
         fg_masks[c] = y  # binary 0 or 1
 
     final = _combine_fg_masks_to_final(fg_masks, anns, tie_mode)
@@ -341,9 +343,9 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
         if trio_parallel:
             def _run(cs: str) -> np.ndarray:
                 feats_cs = convert_color_space(img_rgb_u8, cs)
-                sfg, sbg = ao_refine_seeds(feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg)
+                sfg, sbg = ao_refine_seeds(img_rgb_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, conf_img=feats_cs)
                 y_bin = opencv_grabcut_once(feats_cs, seeds_bg=sbg, seeds_fg=sfg, iters=gc_iters)
-                y_bin = ao_post_smooth_mask(feats_cs, y_bin)
+                y_bin = ao_post_smooth_mask(img_rgb_u8, y_bin, guide_img=img_rgb_u8)
                 return y_bin.astype(np.uint8)
 
             with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -353,9 +355,9 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
             votes = []
             for cs in trio:
                 feats_cs = convert_color_space(img_rgb_u8, cs)
-                sfg, sbg = ao_refine_seeds(feats_cs, seeds_bg=seeds_bg, seeds_fg=seeds_fg)
+                sfg, sbg = ao_refine_seeds(img_rgb_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, conf_img=feats_cs)
                 y_bin = opencv_grabcut_once(feats_cs, seeds_bg=sbg, seeds_fg=sfg, iters=gc_iters)
-                y_bin = ao_post_smooth_mask(feats_cs, y_bin)
+                y_bin = ao_post_smooth_mask(img_rgb_u8, y_bin, guide_img=img_rgb_u8)
                 votes.append(y_bin.astype(np.uint8))
 
         stack = np.stack(votes, axis=2)
@@ -457,7 +459,7 @@ def _process_single_image(ann_path: str,
     else:
         img_feats = convert_color_space(img_rgb, color_space)
         if emit_models:
-            pred, models_by_class = run_one_vs_rest(img_feats, anns, gc_iters=int(gc_iters), tie_mode=tie_mode, collect_models=True)  # type: ignore
+            pred, models_by_class = run_one_vs_rest(img_feats, img_rgb, anns, gc_iters=int(gc_iters), tie_mode=tie_mode, collect_models=True)  # type: ignore
             models_out_dir = Path(models_dir) if models_dir else (out_dir_p / "models")
             written = save_models_npz(
                 base=base,
@@ -472,7 +474,7 @@ def _process_single_image(ann_path: str,
                 },
             )
         else:
-            pred = run_one_vs_rest(img_feats, anns, gc_iters=int(gc_iters), tie_mode=tie_mode)  # type: ignore
+            pred = run_one_vs_rest(img_feats, img_rgb, anns, gc_iters=int(gc_iters), tie_mode=tie_mode)  # type: ignore
             written = []
 
     out_path = out_dir_p / f"{base}_index.png"
