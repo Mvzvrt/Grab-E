@@ -460,6 +460,49 @@ def _ruderman_lab_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     lab = lms_log @ M_lms2lab.T
     return _scale_to_uint8_per_channel(lab)
 
+# --- Opponent O1,O2,O3 ---
+def _opponent_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
+    x = img_rgb_u8.astype(np.float32) / 255.0
+    R, G, B = x[..., 0], x[..., 1], x[..., 2]
+    O1 = (R + G + B) / 3.0
+    O2 = G - R
+    O3 = B - (R + G) / 2.0
+    opp = np.stack([O1, O2, O3], axis=2).astype(np.float32)
+    return _scale_to_uint8_per_channel(opp)
+
+# --- Log-chromaticity, I, log(R/G), log(B/G) ---
+def _log_chroma_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
+    eps = 1e-6
+    x = img_rgb_u8.astype(np.float32) / 255.0
+    R, G, B = x[..., 0] + eps, x[..., 1] + eps, x[..., 2] + eps
+    I = 0.299 * R + 0.587 * G + 0.114 * B
+    Lrg = np.log(R / G)
+    Lbg = np.log(B / G)
+    out = np.stack([I, Lrg, Lbg], axis=2).astype(np.float32)
+    return _scale_to_uint8_per_channel(out)
+
+# --- Geusebroek C1,C2,C3 invariants ---
+def _c1c2c3_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
+    # One common instantiation, intensity independent chromatic coordinates
+    x = img_rgb_u8.astype(np.float32) / 255.0
+    R, G, B = x[..., 0], x[..., 1], x[..., 2]
+    S = R + G + B + 1e-6
+    r = R / S
+    g = G / S
+    b = B / S
+    # Simple invariant triplet, alternatives exist in the paper
+    C1 = np.arctan2(r, max(1e-6, g))   # proxy for hue like coordinate
+    C2 = b                              # blue chromaticity
+    C3 = r - g                          # red green contrast
+    inv = np.stack([C1, C2, C3], axis=2).astype(np.float32)
+    return _scale_to_uint8_per_channel(inv)
+
+# --- Expose CAM16-UCS already computed in your file ---
+def _cam16_ucs_from_rgb_u8(img_rgb_u8: np.ndarray) -> np.ndarray:
+    jab = _cam16_ucs_from_rgb(img_rgb_u8)  # returns float32 J′a′b′
+    return _scale_to_uint8_per_channel(jab)
+
+
 
 # ---------- colorspace router with caching ----------
 
@@ -481,6 +524,10 @@ def get_color_converter(mode: str) -> Optional[Callable[[np.ndarray], np.ndarray
         'ycbcr_bt709': _ycbcr_bt709_from_rgb,
         'srgb_linear': _srgb_linear_from_rgb,
         'ruderman_lab': _ruderman_lab_from_rgb,
+        'opponent': _opponent_from_rgb,
+        'log_chroma': _log_chroma_from_rgb,
+        'c1c2c3': _c1c2c3_from_rgb,
+        'c16_ucs': _cam16_ucs_from_rgb_u8,
     }
     return converters.get(mode.lower())
 
