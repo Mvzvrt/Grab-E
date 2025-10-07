@@ -9,7 +9,8 @@ This module centralizes all color-space conversions and exposes:
 
 Supported keys match those used previously in grabcut.py:
   rgb, hsv_conic, cielab, c02_scd, c16_scd,
-  oklab, oklch, jzazbz, jzczhz, ictcp_pq, xyz, ycbcr_bt709, srgb_linear.
+  oklab, oklch, jzazbz, jzczhz, ictcp_pq, xyz, ycbcr_bt709, srgb_linear,
+  ruderman_lab, lalphabeta
 """
 from __future__ import annotations
 from typing import Optional, Callable, Tuple
@@ -29,8 +30,6 @@ def _ensure_hwc3(arr: np.ndarray, H: int, W: int, where: str = "converter") -> n
     if a.ndim == 1 and a.size == H * W * 3:
         return a.reshape(H, W, 3)
     raise ValueError(f"{where} produced array with shape {a.shape}, expected {(H, W, 3)}")
-
-
 
 
 def _scale_to_uint8_per_channel(x: np.ndarray) -> np.ndarray:
@@ -71,16 +70,14 @@ def _lab_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     return cv.cvtColor(img_rgb_u8, cv.COLOR_RGB2LAB)
 
 
-# ---------- CAM02 SCD using Colour if available, else colorspacious ----------
+# ---------- CAM02 SCD using colourscience toolkits if available ----------
 
 def _rgb_u8_to_float01(img_rgb_u8: np.ndarray) -> np.ndarray:
     return img_rgb_u8.astype(np.float32, copy=False) / 255.0
 
 
 def _cam02_scd_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
-    # Prefer colorspacious by default
     H, W = img_rgb_u8.shape[:2]
-
     try:
         from colorspacious import cspace_convert  # type: ignore
         jab = cspace_convert(
@@ -93,11 +90,11 @@ def _cam02_scd_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
             jab = jab.reshape(H, W, 3)
         jab = _ensure_hwc3(jab, H, W, where="cam02_scd(colorspacious)")
         return _scale_to_uint8_per_channel(jab)
-
     except Exception:
-        raise RuntimeError("Use colorspacious")
+        raise RuntimeError("Use colorspacious for CAM02 SCD")
 
-# ---------- CAM16 vectorized implementation, no external deps ----------
+
+# ---------- CAM16 vectorized implementation ----------
 
 _CAT16 = np.array([
     [ 0.401288,  0.650173, -0.051461],
@@ -293,14 +290,12 @@ _OKLAB_M2 = np.array([
 def _oklab_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     rgb_lin = _srgb_u8_to_linear01(img_rgb_u8)
     lms = rgb_lin @ _OKLAB_M1.T
-    # Guard small negatives before cube root
     lms = np.clip(lms, 0.0, None)
     lms_cbrt = np.cbrt(lms)
     lab = lms_cbrt @ _OKLAB_M2.T
     return _scale_to_uint8_per_channel(lab)
 
 def _oklch_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
-    # L in 0..1, a, b approx in [-, +]
     rgb_lin = _srgb_u8_to_linear01(img_rgb_u8)
     lms = rgb_lin @ _OKLAB_M1.T
     lms = np.clip(lms, 0.0, None)
@@ -312,9 +307,7 @@ def _oklch_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     C = np.sqrt(a * a + b * b)
     h = np.degrees(np.arctan2(b, a))
     h[h < 0.0] += 360.0
-    # Map to uint8, fixed scale for L and h, per image scale for C
     L8 = np.clip(L * 255.0, 0, 255).astype(np.uint8)
-    # Per channel scale for C
     C8 = _scale_to_uint8_per_channel(C[:, :, None])[:, :, 0]
     h8 = np.clip((h / 360.0) * 255.0, 0, 255).astype(np.uint8)
     return np.stack([L8, C8, h8], axis=2)
@@ -323,8 +316,8 @@ def _oklch_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
 _JZ_c1 = 0.8359375
 _JZ_c2 = 18.8515625
 _JZ_c3 = 18.6875
-_JZ_n  = 0.1593017578125  # 2610 / 16384
-_JZ_p  = 78.84375         # 2523 / 32
+_JZ_n  = 0.1593017578125
+_JZ_p  = 78.84375
 _JZ_b  = 1.15
 _JZ_g  = 0.66
 _JZ_d  = -0.56
@@ -352,9 +345,8 @@ def _pq_oetf_inverse(x: np.ndarray) -> np.ndarray:
     return y.astype(np.float32)
 
 def _jzazbz_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
-    # sRGB linear to XYZ
     rgb_lin = _srgb_u8_to_linear01(img_rgb_u8)
-    XYZ = rgb_lin @ _SRGB_TO_XYZ.T  # relative XYZ
+    XYZ = rgb_lin @ _SRGB_TO_XYZ.T
     X = XYZ[:, :, 0]
     Y = XYZ[:, :, 1]
     Z = XYZ[:, :, 2]
@@ -363,7 +355,7 @@ def _jzazbz_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     Zp = Z
     XYZp = np.stack([Xp, Yp, Zp], axis=2)
     LMS = XYZp @ _JZ_M1.T
-    LMS_p = _pq_oetf_inverse(LMS)  # approximate, using relative units
+    LMS_p = _pq_oetf_inverse(LMS)
     IzAzBz = LMS_p @ _JZ_M2.T
     Iz = IzAzBz[:, :, 0]
     az = IzAzBz[:, :, 1]
@@ -373,7 +365,6 @@ def _jzazbz_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     return _scale_to_uint8_per_channel(jzazbz)
 
 def _jzczhz_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
-    # Build from JzAzBz then to polar
     rgb_lin = _srgb_u8_to_linear01(img_rgb_u8)
     XYZ = rgb_lin @ _SRGB_TO_XYZ.T
     X = XYZ[:, :, 0]
@@ -393,7 +384,6 @@ def _jzczhz_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     Cz = np.sqrt(az * az + bz * bz)
     hz = np.degrees(np.arctan2(bz, az))
     hz[hz < 0.0] += 360.0
-    # Map to uint8, fixed scale for hue, per image for Cz, scaled Jz
     J8 = _scale_to_uint8_per_channel(Jz[:, :, None])[:, :, 0]
     C8 = _scale_to_uint8_per_channel(Cz[:, :, None])[:, :, 0]
     h8 = np.clip((hz / 360.0) * 255.0, 0, 255).astype(np.uint8)
@@ -409,30 +399,67 @@ def _srgb_linear_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     return np.clip(lin * 255.0, 0, 255).astype(np.uint8)
 
 def _ycbcr_bt709_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
-    # Use gamma encoded R prime, G prime, B prime approximated by sRGB 8 bit normalized
     rp = img_rgb_u8[:, :, 0].astype(np.float32) / 255.0
     gp = img_rgb_u8[:, :, 1].astype(np.float32) / 255.0
     bp = img_rgb_u8[:, :, 2].astype(np.float32) / 255.0
-    # BT.709 coefficients
     Yp = 0.2126 * rp + 0.7152 * gp + 0.0722 * bp
     Cb = -0.1146 * rp - 0.3854 * gp + 0.5 * bp
     Cr =  0.5 * rp - 0.4542 * gp - 0.0458 * bp
-    # Map to uint8, Y in 0..1, Cb Cr around -0.5..0.5 to 0..1 by offset
     Y8  = np.clip(Yp * 255.0, 0, 255).astype(np.uint8)
     Cb8 = np.clip((Cb + 0.5) * 255.0, 0, 255).astype(np.uint8)
     Cr8 = np.clip((Cr + 0.5) * 255.0, 0, 255).astype(np.uint8)
     return np.stack([Y8, Cb8, Cr8], axis=2)
 
 def _ictcp_pq_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
-    # sRGB linear -> XYZ -> BT.2020 linear -> LMS -> PQ -> ICtCp
     rgb_lin = _srgb_u8_to_linear01(img_rgb_u8)
     XYZ = rgb_lin @ _SRGB_TO_XYZ.T
     rgb2020_lin = XYZ @ _XYZ_TO_BT2020.T
     LMS = rgb2020_lin @ _ICTCP_RGB2020_TO_LMS.T
     LMS = np.clip(LMS, 0.0, None)
-    LMS_p = _pq_oetf_inverse(LMS)  # approximate, relative units
+    LMS_p = _pq_oetf_inverse(LMS)
     ICTCP = LMS_p @ _ICTCP_LMS_TO_ICTCP_PQ.T
     return _scale_to_uint8_per_channel(ICTCP)
+
+# ---------- Ruderman l alpha beta opponent space ----------
+
+def _ruderman_lab_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
+    """
+    Ruderman l alpha beta opponent space.
+    Steps:
+      sRGB to linear RGB
+      linear RGB to LMS using Smith and Pokorny fundamentals
+      log10 on LMS
+      orthonormal transform to l, alpha, beta
+    Returns uint8 features scaled per channel.
+    """
+    # sRGB to linear
+    lin = _srgb_u8_to_linear01(img_rgb_u8)
+
+    # linear RGB to LMS
+    M_rgb2lms = np.array([
+        [0.3811, 0.5783, 0.0402],
+        [0.1967, 0.7244, 0.0782],
+        [0.0241, 0.1288, 0.8444]
+    ], dtype=np.float32)
+    lms = lin @ M_rgb2lms.T
+
+    # avoid log of zero
+    lms = np.maximum(lms, 1e-6)
+    lms_log = np.log10(lms)
+
+    # log LMS to l alpha beta via orthonormal matrix
+    inv_sqrt3 = 1.0 / np.sqrt(3.0)
+    inv_sqrt6 = 1.0 / np.sqrt(6.0)
+    inv_sqrt2 = 1.0 / np.sqrt(2.0)
+    M_lms2lab = np.array([
+        [inv_sqrt3,  inv_sqrt3,  inv_sqrt3],
+        [inv_sqrt6,  inv_sqrt6, -2.0 * inv_sqrt6],
+        [inv_sqrt2, -inv_sqrt2, 0.0]
+    ], dtype=np.float32)
+
+    lab = lms_log @ M_lms2lab.T
+    return _scale_to_uint8_per_channel(lab)
+
 
 # ---------- colorspace router with caching ----------
 
@@ -445,7 +472,6 @@ def get_color_converter(mode: str) -> Optional[Callable[[np.ndarray], np.ndarray
         'cielab': _lab_from_rgb,
         'c02_scd': _cam02_scd_from_rgb,
         'c16_scd': _cam16_scd_from_rgb,
-        # new modern spaces
         'oklab': _oklab_from_rgb,
         'oklch': _oklch_from_rgb,
         'jzazbz': _jzazbz_from_rgb,
@@ -454,6 +480,8 @@ def get_color_converter(mode: str) -> Optional[Callable[[np.ndarray], np.ndarray
         'xyz': _xyz_from_rgb,
         'ycbcr_bt709': _ycbcr_bt709_from_rgb,
         'srgb_linear': _srgb_linear_from_rgb,
+        'ruderman_lab': _ruderman_lab_from_rgb,
+        'lalphabeta': _ruderman_lab_from_rgb,
     }
     return converters.get(mode.lower())
 
@@ -468,6 +496,3 @@ def convert_color_space(img_rgb_u8: np.ndarray, mode: str) -> np.ndarray:
     if out.dtype != np.uint8:
         out = _scale_to_uint8_per_channel(out)
     return out
-
-
-
