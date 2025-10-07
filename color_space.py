@@ -481,7 +481,6 @@ def get_color_converter(mode: str) -> Optional[Callable[[np.ndarray], np.ndarray
         'ycbcr_bt709': _ycbcr_bt709_from_rgb,
         'srgb_linear': _srgb_linear_from_rgb,
         'ruderman_lab': _ruderman_lab_from_rgb,
-        'lalphabeta': _ruderman_lab_from_rgb,
     }
     return converters.get(mode.lower())
 
