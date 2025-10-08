@@ -8,31 +8,12 @@ $VenvActivate = Join-Path $Repo ".gc\Scripts\Activate.ps1"
 if (Test-Path $VenvActivate) { . $VenvActivate }
 
 $all = @(
-  "rgb",
-  "hsv_conic",
-  "cielab",
-  "c02_scd",
-  "c16_scd",
-  "oklab",
-  "oklch",
-  "jzazbz",
-  "jzczhz",
-  "ictcp_pq",
-  "xyz",
-  "ycbcr_bt709",
-  "srgb_linear",
-  "ruderman_lab"
+  "opponent",
+  "log_chroma",
+  "c1c2c3",
 )
 
-$startAfter = "hsv_conic"
-$skip = @("rgb","hsv_conic")  # rgb done, hsv_conic currently running
-$passed = $false
-
 foreach ($cs in $all) {
-  if ($cs -eq $startAfter) { $passed = $true; continue }
-  if (-not $passed) { continue }
-  if ($skip -contains $cs) { continue }
-
   $outDir = ".\$cs"
   if (Test-Path $outDir) {
     Write-Host "Skipping $cs, $outDir already exists"

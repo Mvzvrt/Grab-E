@@ -7,4 +7,16 @@ test/
 ens2/
 rgb/
 hsv/
+c02_scd/
+c16_scd/
+cielab/
+ictcp_pq/
+jzazbz/
+jzczhz/
+oklab/
+oklch/
+ruderman_lab/
+srgb_linear/
+xyz/
+ycbcr_bt709/
 run_indv_exp.ps1
