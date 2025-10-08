@@ -497,12 +497,6 @@ def _c1c2c3_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     inv = np.stack([C1, C2, C3], axis=2).astype(np.float32)
     return _scale_to_uint8_per_channel(inv)
 
-# --- Expose CAM16-UCS already computed in your file ---
-def _cam16_ucs_from_rgb_u8(img_rgb_u8: np.ndarray) -> np.ndarray:
-    jab = _cam16_ucs_from_rgb(img_rgb_u8)  # returns float32 J′a′b′
-    return _scale_to_uint8_per_channel(jab)
-
-
 
 # ---------- colorspace router with caching ----------
 
@@ -527,7 +521,6 @@ def get_color_converter(mode: str) -> Optional[Callable[[np.ndarray], np.ndarray
         'opponent': _opponent_from_rgb,
         'log_chroma': _log_chroma_from_rgb,
         'c1c2c3': _c1c2c3_from_rgb,
-        'c16_ucs': _cam16_ucs_from_rgb_u8,
     }
     return converters.get(mode.lower())
 
