@@ -10,7 +10,7 @@ if (Test-Path $VenvActivate) { . $VenvActivate }
 $all = @(
   "opponent",
   "log_chroma",
-  "c1c2c3",
+  "c1c2c3"
 )
 
 foreach ($cs in $all) {
