@@ -481,6 +481,27 @@ def _log_chroma_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     out = np.stack([I, Lrg, Lbg], axis=2).astype(np.float32)
     return _scale_to_uint8_per_channel(out)
 
+# --- Normalized RGB chromaticity r/(r+g+b), g/(r+g+b), b/(r+g+b) ---
+def _normalized_rgb_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
+    """
+    Per pixel chromaticity:
+      r_n = R / (R + G + B + eps)
+      g_n = G / (R + G + B + eps)
+      b_n = B / (R + G + B + eps)
+    Output is uint8 by scaling each channel from [0,1] to [0,255].
+    """
+    x = img_rgb_u8.astype(np.float32, copy=False) / 255.0
+    R = x[..., 0]
+    G = x[..., 1]
+    B = x[..., 2]
+    eps = 1e-6
+    s = R + G + B + eps
+    rn = R / s
+    gn = G / s
+    bn = B / s
+    out = np.stack([rn, gn, bn], axis=2)
+    return np.clip(out * 255.0, 0, 255).astype(np.uint8)
+
 
 # ---------- colorspace router with caching ----------
 
@@ -504,6 +525,7 @@ def get_color_converter(mode: str) -> Optional[Callable[[np.ndarray], np.ndarray
         'ruderman_lab': _ruderman_lab_from_rgb,
         'opponent': _opponent_from_rgb,
         'log_chroma': _log_chroma_from_rgb,
+        'n_rgb': _normalized_rgb_from_rgb,
     }
     return converters.get(mode.lower())
 
