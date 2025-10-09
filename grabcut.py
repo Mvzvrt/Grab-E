@@ -53,6 +53,7 @@ from tqdm import tqdm
 import sys, pathlib
 sys.path.append(str(pathlib.Path(__file__).parent / "mgc_core"))
 from mgc_api import mgc_refine_seeds, mgc_post_smooth_mask
+from ao_api import ao_refine_seeds
 
 # ---------- constants / palette ----------
 NUM_VOC_CLASSES = 21
@@ -224,6 +225,7 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
         seeds_fg = (anns == c)
         seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
         seeds_fg, seeds_bg = mgc_refine_seeds(img_rgb_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, conf_img=img_feats_u8)
+        seeds_fg, seeds_bg = ao_refine_seeds(img_rgb_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, conf_img=img_feats_u8)
 
         if collect_models:
             y, bgm, fgm = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters, return_models=True)  # type: ignore
@@ -344,6 +346,7 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
             def _run(cs: str) -> np.ndarray:
                 feats_cs = convert_color_space(img_rgb_u8, cs)
                 sfg, sbg = mgc_refine_seeds(img_rgb_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, conf_img=feats_cs)
+                sfg, sbg = ao_refine_seeds(img_rgb_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, conf_img=feats_cs)
                 y_bin = opencv_grabcut_once(feats_cs, seeds_bg=sbg, seeds_fg=sfg, iters=gc_iters)
                 y_bin = mgc_post_smooth_mask(img_rgb_u8, y_bin, guide_img=img_rgb_u8)
                 return y_bin.astype(np.uint8)
@@ -356,6 +359,7 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
             for cs in trio:
                 feats_cs = convert_color_space(img_rgb_u8, cs)
                 sfg, sbg = mgc_refine_seeds(img_rgb_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, conf_img=feats_cs)
+                sfg, sbg = ao_refine_seeds(img_rgb_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, conf_img=feats_cs)
                 y_bin = opencv_grabcut_once(feats_cs, seeds_bg=sbg, seeds_fg=sfg, iters=gc_iters)
                 y_bin = mgc_post_smooth_mask(img_rgb_u8, y_bin, guide_img=img_rgb_u8)
                 votes.append(y_bin.astype(np.uint8))
