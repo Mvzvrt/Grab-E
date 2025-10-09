@@ -52,7 +52,7 @@ from tqdm import tqdm
 
 import sys, pathlib
 sys.path.append(str(pathlib.Path(__file__).parent / "mgc_core"))
-from gc_prepost import ao_refine_seeds, ao_post_smooth_mask
+from mgc_api import ao_refine_seeds, ao_post_smooth_mask
 
 # ---------- constants / palette ----------
 NUM_VOC_CLASSES = 21
