@@ -503,7 +503,7 @@ def parse_args(argv=None):
                     choices=[
                         "rgb", "hsv_conic", "cielab", "c02_scd", "c16_scd",
                         "oklab", "oklch", "jzazbz", "jzczhz",
-                        "ictcp_pq", "xyz", "ycbcr_bt709", "srgb_linear" ,"ruderman_lab", "opponent", "log_chroma", "c1c2c3"
+                        "ictcp_pq", "xyz", "ycbcr_bt709", "srgb_linear" ,"ruderman_lab", "opponent", "log_chroma"
                     ],
                     help="Input feature color space for the single space baseline path. Default is rgb.")
 
