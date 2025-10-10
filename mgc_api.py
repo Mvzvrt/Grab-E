@@ -70,7 +70,7 @@ def _ensure_bool(arr: np.ndarray) -> np.ndarray:
 
 # ---------- Public API, AO-compatible wrappers ----------
 
-def ao_refine_seeds(img_rgb_u8: np.ndarray,
+def mgc_refine_seeds(img_rgb_u8: np.ndarray,
                     seeds_bg: np.ndarray,
                     seeds_fg: np.ndarray,
                     conf_img: np.ndarray | None = None,
@@ -121,7 +121,7 @@ def ao_refine_seeds(img_rgb_u8: np.ndarray,
     return seeds_fg2.astype(bool), seeds_bg2.astype(bool)
 
 
-def ao_post_smooth_mask(img_rgb_u8: np.ndarray,
+def mgc_post_smooth_mask(img_rgb_u8: np.ndarray,
                         bin_mask01: np.ndarray,
                         guide_img: np.ndarray | None = None,
                         **kwargs) -> np.ndarray:
