@@ -1,0 +1,11 @@
+        {
+          "timestamp": "2025-10-13T12:20:50.590593Z",
+          "images_evaluated": 2844,
+          "miou_class_mean_21": 68.38367111935504,
+          "dice_class_mean_21": 80.74073373716088,
+          "recall_class_mean_21": 78.6192697564115,
+          "precision_class_mean_21": 83.62082621039481,
+          "mean_accuracy": 78.6192697564115,
+          "cohens_kappa": 0.7941657741976611,
+          "bf_score_mean": 52.85859813524797
+        }
