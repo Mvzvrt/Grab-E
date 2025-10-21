@@ -38,33 +38,36 @@ class CanvasWidget(QWidget):
     # Signals
     scribbles_changed = Signal()  # Emitted when scribbles are modified
     
-    # Class color palette (VOC-style colors for classes 0-20)
-    CLASS_COLORS = [
+    # Default class color palette (VOC-style colors)
+    _DEFAULT_COLORS = [
         QColor(0, 0, 0),         # 0: Background (black)
-        QColor(128, 0, 0),       # 1: Class 1 (maroon)
-        QColor(0, 128, 0),       # 2: Class 2 (green)
-        QColor(128, 128, 0),     # 3: Class 3 (olive)
-        QColor(0, 0, 128),       # 4: Class 4 (navy)
-        QColor(128, 0, 128),     # 5: Class 5 (purple)
-        QColor(0, 128, 128),     # 6: Class 6 (teal)
-        QColor(128, 128, 128),   # 7: Class 7 (gray)
-        QColor(64, 0, 0),        # 8: Class 8
-        QColor(192, 0, 0),       # 9: Class 9
-        QColor(64, 128, 0),      # 10: Class 10
-        QColor(192, 128, 0),     # 11: Class 11
-        QColor(64, 0, 128),      # 12: Class 12
-        QColor(192, 0, 128),     # 13: Class 13
-        QColor(64, 128, 128),    # 14: Class 14
-        QColor(192, 128, 128),   # 15: Class 15
-        QColor(0, 64, 0),        # 16: Class 16
-        QColor(128, 64, 0),      # 17: Class 17
-        QColor(0, 192, 0),       # 18: Class 18
-        QColor(128, 192, 0),     # 19: Class 19
-        QColor(0, 64, 128),      # 20: Class 20
+        QColor(128, 0, 0),       # 1: Background marker (maroon)
+        QColor(0, 128, 0),       # 2: Class 1 (green)
+        QColor(128, 128, 0),     # 3: Class 2 (olive)
+        QColor(0, 0, 128),       # 4: Class 3 (navy)
+        QColor(128, 0, 128),     # 5: Class 4 (purple)
+        QColor(0, 128, 128),     # 6: Class 5 (teal)
+        QColor(128, 128, 128),   # 7: Class 6 (gray)
+        QColor(64, 0, 0),        # 8: Class 7
+        QColor(192, 0, 0),       # 9: Class 8
+        QColor(64, 128, 0),      # 10: Class 9
+        QColor(192, 128, 0),     # 11: Class 10
+        QColor(64, 0, 128),      # 12: Class 11
+        QColor(192, 0, 128),     # 13: Class 12
+        QColor(64, 128, 128),    # 14: Class 13
+        QColor(192, 128, 128),   # 15: Class 14
+        QColor(0, 64, 0),        # 16: Class 15
+        QColor(128, 64, 0),      # 17: Class 16
+        QColor(0, 192, 0),       # 18: Class 17
+        QColor(128, 192, 0),     # 19: Class 18
+        QColor(0, 64, 128),      # 20: Class 19
     ]
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        
+        # Dynamic class colors dictionary: annotation_class_id -> QColor
+        self.class_colors = {0: self._DEFAULT_COLORS[0], 1: self._DEFAULT_COLORS[1]}  # BG and BG marker
         
         # Image data
         self.original_image: Optional[QImage] = None
@@ -83,7 +86,7 @@ class CanvasWidget(QWidget):
         # Drawing state
         self.is_drawing = False
         self.current_stroke_points: List[QPoint] = []
-        self.current_class = 1  # 0=bg, 1=fg class 1, 2=fg class 2, etc.
+        self.current_class = 1  # Start with background by default
         self.brush_size = 5
         self.eraser_mode = False
         
@@ -148,8 +151,25 @@ class CanvasWidget(QWidget):
         self.update()
     
     def set_current_class(self, class_id: int) -> None:
-        """Set the current class for drawing (0=bg, 1..20=fg)."""
-        self.current_class = max(0, min(20, class_id))
+        """Set the current class for drawing (0=bg, 1=bg_marker, 2+=fg_classes)."""
+        self.current_class = max(0, class_id)
+    
+    def add_class_color(self, class_id: int, color: QColor) -> None:
+        """Add or update a class color."""
+        self.class_colors[class_id] = color
+        self.update()
+    
+    def get_class_color(self, class_id: int) -> QColor:
+        """Get color for a class, or default if not defined."""
+        if class_id in self.class_colors:
+            return self.class_colors[class_id]
+        # Generate a default color if not defined
+        if class_id < len(self._DEFAULT_COLORS):
+            return self._DEFAULT_COLORS[class_id]
+        # Generate a random-ish color for high class IDs
+        import random
+        random.seed(class_id)
+        return QColor(random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
     
     def set_brush_size(self, size: int) -> None:
         """Set brush size in pixels."""
@@ -209,7 +229,8 @@ class CanvasWidget(QWidget):
         Convert scribbles to annotation map.
         
         Returns:
-            HxW int32 array with class labels: 0=unknown, 1=bg, 2..21=fg classes
+            HxW int32 array with class labels where values match the class_id directly
+            (1=background, 2=first_fg, 3=second_fg, etc.)
         """
         if self.image_array is None:
             return np.array([[]], dtype=np.int32)
@@ -218,7 +239,7 @@ class CanvasWidget(QWidget):
         annotations = np.zeros((h, w), dtype=np.int32)
         
         for scribble in self.scribbles:
-            class_id = scribble.class_id + 1  # Map 0->1, 1->2, etc.
+            class_id = scribble.class_id  # Use class_id directly (1, 2, 3...)
             
             # Rasterize the stroke
             for i in range(len(scribble.points) - 1):
@@ -349,7 +370,7 @@ class CanvasWidget(QWidget):
         
         # Draw current stroke
         if self.is_drawing and len(self.current_stroke_points) > 1:
-            color = self.CLASS_COLORS[self.current_class] if not self.eraser_mode else QColor(255, 255, 255)
+            color = self.get_class_color(self.current_class) if not self.eraser_mode else QColor(255, 255, 255)
             pen = QPen(color, self.brush_size * self.zoom_factor, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
             painter.setPen(pen)
             
@@ -357,6 +378,7 @@ class CanvasWidget(QWidget):
             path.moveTo(self.current_stroke_points[0])
             for pt in self.current_stroke_points[1:]:
                 path.lineTo(pt)
+            painter.drawPath(path)
             painter.drawPath(path)
     
     def _draw_segmentation_overlay(self, painter: QPainter, target_rect: QRect) -> None:
@@ -369,19 +391,20 @@ class CanvasWidget(QWidget):
         # Create colored overlay
         overlay = np.zeros((h, w, 4), dtype=np.uint8)
         
-        # Segmentation mask values: 0=background, 1-20=foreground classes
-        # These map to annotation classes: 0=background, 2-21=foreground
-        # So mask value 0 stays 0 (background), but mask values 1-20 need to map to colors 2-21
-        for mask_value in range(21):
+        # Segmentation mask values are output labels: 0, 1, 2, 3...
+        # These need to map back to class IDs: 1, 2, 3, 4...
+        # Formula: class_id = mask_value + 1
+        unique_values = np.unique(self.segmentation_mask)
+        for mask_value in unique_values:
             mask = (self.segmentation_mask == mask_value)
             if np.any(mask):
-                # Map mask value to display color:
-                # mask_value 0 -> CLASS_COLORS[0] (background black)
-                # mask_value 1 -> CLASS_COLORS[2] (first foreground class - green)
-                # mask_value 2 -> CLASS_COLORS[3] (second foreground class - olive)
+                # Map mask label to class ID:
+                # mask_value 0 -> class_id 1 (background)
+                # mask_value 1 -> class_id 2 (first foreground)
+                # mask_value 2 -> class_id 3 (second foreground)
                 # etc.
-                color_index = mask_value + 1 if mask_value > 0 else 0
-                color = self.CLASS_COLORS[color_index]
+                class_id = int(mask_value) + 1
+                color = self.get_class_color(class_id)
                 overlay[mask] = [color.red(), color.green(), color.blue(), 
                                 int(255 * self.segmentation_opacity)]
         
@@ -453,7 +476,7 @@ class CanvasWidget(QWidget):
                     self._erase_scribbles()
                 else:
                     # Add new scribble
-                    color = self.CLASS_COLORS[self.current_class]
+                    color = self.get_class_color(self.current_class)
                     scribble = ScribbleLayer(
                         self.current_class, color, 
                         self.current_stroke_points, self.brush_size

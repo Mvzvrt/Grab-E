@@ -20,10 +20,10 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QSpinBox, QSlider, QComboBox, QFileDialog, QMessageBox,
     QToolBar, QStatusBar, QDockWidget, QGroupBox, QCheckBox,
-    QProgressDialog, QSplitter
+    QProgressDialog, QSplitter, QColorDialog, QInputDialog
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QAction, QKeySequence, QIcon
+from PySide6.QtGui import QAction, QKeySequence, QIcon, QColor
 from PIL import Image
 
 from canvas_widget import CanvasWidget
@@ -138,6 +138,10 @@ class MainWindow(QMainWindow):
         self.current_image_path: Optional[Path] = None
         self.segmentation_worker: Optional[SegmentationWorker] = None
         
+        # Class management: maps class_id -> {"name": str, "color": QColor}
+        self.classes = {}
+        self.next_class_id = 1  # Start from 1 (background)
+        
         # UI setup
         self.setWindowTitle("Interactive GrabCut Segmentation")
         self.setGeometry(100, 100, 1400, 900)
@@ -147,6 +151,9 @@ class MainWindow(QMainWindow):
         self._create_central_widget()
         self._create_dock_widgets()
         self._create_status_bar()
+        
+        # Initialize with background class
+        self._initialize_default_classes()
         
         self._update_ui_state()
     
@@ -262,6 +269,9 @@ class MainWindow(QMainWindow):
         self.canvas = CanvasWidget()
         self.canvas.scribbles_changed.connect(self._on_scribbles_changed)
         
+        # Will be set to background (class 1) after initialization
+        self.canvas.set_current_class(1)
+        
         self.setCentralWidget(self.canvas)
     
     def _create_dock_widgets(self):
@@ -275,15 +285,43 @@ class MainWindow(QMainWindow):
         draw_layout = QVBoxLayout()
         
         # Class selection
-        class_group = QGroupBox("Current Class")
+        class_group = QGroupBox("Classes")
         class_layout = QVBoxLayout()
         
+        # Info label
+        info_label = QLabel("Define your classes, then draw scribbles:")
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: gray; font-size: 10px;")
+        class_layout.addWidget(info_label)
+        
+        # Class list
         self.class_combo = QComboBox()
-        self.class_combo.addItem("Background (0)", 0)
-        for i in range(1, 21):
-            self.class_combo.addItem(f"Foreground Class {i}", i)
+        self.class_combo.setToolTip("Select which class to draw scribbles for")
         self.class_combo.currentIndexChanged.connect(self._on_class_changed)
         class_layout.addWidget(self.class_combo)
+        
+        # Add class button
+        self.add_class_btn = QPushButton("+ Add New Class")
+        self.add_class_btn.clicked.connect(self._add_new_class)
+        self.add_class_btn.setToolTip("Add a new object class (dog, chair, person, etc.)")
+        class_layout.addWidget(self.add_class_btn)
+        
+        # Edit/Remove buttons
+        class_btn_layout = QHBoxLayout()
+        
+        self.edit_class_btn = QPushButton("Edit")
+        self.edit_class_btn.clicked.connect(self._edit_current_class)
+        self.edit_class_btn.setEnabled(False)
+        self.edit_class_btn.setToolTip("Change class name or color")
+        class_btn_layout.addWidget(self.edit_class_btn)
+        
+        self.remove_class_btn = QPushButton("Remove")
+        self.remove_class_btn.clicked.connect(self._remove_current_class)
+        self.remove_class_btn.setEnabled(False)
+        self.remove_class_btn.setToolTip("Delete this class")
+        class_btn_layout.addWidget(self.remove_class_btn)
+        
+        class_layout.addLayout(class_btn_layout)
         
         class_group.setLayout(class_layout)
         draw_layout.addWidget(class_group)
@@ -511,6 +549,9 @@ class MainWindow(QMainWindow):
             self.image_array = img_array
             self.current_image_path = Path(file_path)
             self.canvas.set_image(img_array)
+            
+            # Clear previous segmentation mask
+            self.canvas.clear_segmentation()
             
             # Create new sessions (both single and ensemble)
             color_space = self.color_space_combo.currentData()
@@ -780,13 +821,47 @@ class MainWindow(QMainWindow):
             self.canvas.clear_scribbles()
             self.status_bar.showMessage("Scribbles cleared")
     
+    def _initialize_default_classes(self):
+        """Initialize with just the background class."""
+        # Add background class (label 1, black color)
+        self.classes[1] = {
+            "name": "Background",
+            "color": QColor(0, 0, 0)
+        }
+        self.next_class_id = 2
+        
+        # Update combo box
+        self.class_combo.addItem("Background", 1)
+        self.canvas.add_class_color(1, QColor(0, 0, 0))
+        
+        # Enable add button, disable edit/remove
+        self.add_class_btn.setEnabled(True)
+        self.edit_class_btn.setEnabled(False)
+        self.remove_class_btn.setEnabled(False)
+    
     def _on_class_changed(self, index: int):
         """Handle class selection change."""
+        if self.class_combo.count() == 0:
+            return
+        
         class_id = self.class_combo.currentData()
+        if class_id is None:
+            return
+            
         self.canvas.set_current_class(class_id)
-        self.status_bar.showMessage(
-            f"Drawing class: {'Background' if class_id == 0 else f'Foreground {class_id}'}"
-        )
+        
+        # Update button states
+        # Can't remove background (class 1)
+        can_edit = class_id is not None
+        can_remove = class_id != 1
+        
+        self.edit_class_btn.setEnabled(can_edit)
+        self.remove_class_btn.setEnabled(can_remove)
+        
+        # Update status
+        if class_id in self.classes:
+            class_name = self.classes[class_id]["name"]
+            self.status_bar.showMessage(f"Drawing: {class_name} (label {class_id - 1})")
     
     def _on_brush_size_changed(self, value: int):
         """Handle brush size change."""
@@ -823,6 +898,147 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("Mode: Ensemble (Majority Voting with refinement)")
         
         self._update_ui_state()
+    
+    def _add_new_class(self):
+        """Add a new foreground class."""
+        # Limit to reasonable number
+        if self.next_class_id > 50:
+            QMessageBox.warning(self, "Warning", "Maximum number of classes (50) reached.")
+            return
+        
+        # Ask for class name
+        name, ok = QInputDialog.getText(
+            self, 
+            "Add New Class", 
+            f"Enter class name (will be assigned label {self.next_class_id - 1}):",
+            text=f"Object_{self.next_class_id - 1}"
+        )
+        
+        if not ok or not name.strip():
+            return
+        
+        name = name.strip()
+        
+        # Generate a nice default color (cycling through distinct colors)
+        color_palette = [
+            QColor(0, 128, 0),      # Green
+            QColor(128, 128, 0),    # Olive
+            QColor(0, 0, 128),      # Navy
+            QColor(128, 0, 128),    # Purple
+            QColor(0, 128, 128),    # Teal
+            QColor(192, 0, 0),      # Red
+            QColor(192, 128, 0),    # Orange
+            QColor(64, 0, 128),     # Indigo
+        ]
+        default_color = color_palette[(self.next_class_id - 2) % len(color_palette)]
+        
+        # Pick a color
+        color = QColorDialog.getColor(default_color, self, f"Choose color for '{name}'")
+        
+        if not color.isValid():
+            return
+        
+        # Add to class registry
+        class_id = self.next_class_id
+        self.classes[class_id] = {
+            "name": name,
+            "color": color
+        }
+        self.next_class_id += 1
+        
+        # Add to combo box
+        display_name = f"{name} (label {class_id - 1})"
+        self.class_combo.addItem(display_name, class_id)
+        self.canvas.add_class_color(class_id, color)
+        
+        # Select the new class
+        self.class_combo.setCurrentIndex(self.class_combo.count() - 1)
+        
+        self.status_bar.showMessage(f"Added class: {name} (label {class_id - 1})")
+    
+    def _edit_current_class(self):
+        """Edit the name or color of the currently selected class."""
+        current_index = self.class_combo.currentIndex()
+        class_id = self.class_combo.currentData()
+        
+        if class_id is None or class_id not in self.classes:
+            return
+        
+        current_name = self.classes[class_id]["name"]
+        current_color = self.classes[class_id]["color"]
+        
+        # Ask for new name
+        name, ok = QInputDialog.getText(
+            self,
+            "Edit Class",
+            f"Class name (label {class_id - 1}):",
+            text=current_name
+        )
+        
+        if not ok:
+            return
+        
+        if name.strip():
+            name = name.strip()
+        else:
+            name = current_name
+        
+        # Ask for new color
+        color = QColorDialog.getColor(current_color, self, f"Choose color for '{name}'")
+        
+        if not color.isValid():
+            color = current_color
+        
+        # Update class info
+        self.classes[class_id]["name"] = name
+        self.classes[class_id]["color"] = color
+        
+        # Update combo box
+        display_name = f"{name} (label {class_id - 1})"
+        self.class_combo.setItemText(current_index, display_name)
+        
+        # Update canvas color
+        self.canvas.add_class_color(class_id, color)
+        
+        self.status_bar.showMessage(f"Updated: {name}")
+    
+    def _remove_current_class(self):
+        """Remove the currently selected class."""
+        current_index = self.class_combo.currentIndex()
+        class_id = self.class_combo.currentData()
+        
+        # Can't remove background
+        if class_id == 1:
+            QMessageBox.information(self, "Info", "Cannot remove the background class.")
+            return
+        
+        if class_id not in self.classes:
+            return
+        
+        class_name = self.classes[class_id]["name"]
+        
+        reply = QMessageBox.question(
+            self,
+            "Remove Class",
+            f"Remove class '{class_name}' (label {class_id - 1})?\n\n"
+            "Existing scribbles for this class will remain but won't be segmented.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # Remove from registry
+            del self.classes[class_id]
+            
+            # Remove from combo box
+            self.class_combo.removeItem(current_index)
+            
+            # Select previous class if possible
+            if self.class_combo.count() > 0:
+                new_index = min(current_index, self.class_combo.count() - 1)
+                self.class_combo.setCurrentIndex(new_index)
+            
+            self.status_bar.showMessage(f"Removed: {class_name}")
     
     def _show_about(self):
         """Show about dialog."""
