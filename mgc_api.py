@@ -44,7 +44,7 @@ def _edge_key(img: np.ndarray) -> tuple:
 # ---------- Defaults mirroring modern_grabcut CLI ----------
 
 _DEFAULTS = dict(
-    edge_backend="composite",                 # "structured" or "composite"
+    edge_backend="structured",                 # "structured" or "composite"
     structured_model="./mgc_core/third_party/sed/model.yml.gz",
     texture_edges=False,
     geo_radius=12,
