@@ -1,0 +1,15 @@
+# Requirements for Interactive GrabCut Segmentation Application
+
+# GUI Framework
+PySide6>=6.5.0
+
+# Core Scientific Computing
+numpy>=1.24.0
+opencv-python>=4.8.0
+
+# Image Processing
+Pillow>=10.0.0
+scikit-image>=0.21.0
+
+# Optional: For better performance
+# opencv-contrib-python>=4.8.0  # For Structured Forests edge detection (if using modern_grabcut.py)
