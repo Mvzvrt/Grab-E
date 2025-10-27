@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QSpinBox, QSlider, QComboBox, QFileDialog, QMessageBox,
     QToolBar, QStatusBar, QDockWidget, QGroupBox, QCheckBox,
-    QProgressDialog, QSplitter, QColorDialog, QInputDialog, QSizePolicy
+    QProgressDialog, QSplitter, QColorDialog, QInputDialog, QSizePolicy, QScrollArea
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize
 from PySide6.QtGui import QAction, QKeySequence, QIcon, QColor
@@ -144,7 +144,6 @@ class MainWindow(QMainWindow):
         
         # UI setup
         self.setWindowTitle("Interactive GrabCut Segmentation")
-        self.setGeometry(100, 100, 1400, 900)
         
         # Apply modern stylesheet
         self._apply_stylesheet()
@@ -159,18 +158,23 @@ class MainWindow(QMainWindow):
         self._initialize_default_classes()
         
         self._update_ui_state()
+        
+        # Start maximized after all UI is constructed
+        self.showMaximized()
     
     def _apply_stylesheet(self):
-        """Apply modern stylesheet to the application."""
+        """Apply modern dark theme stylesheet to the application."""
         stylesheet = """
         /* Main window and general widgets */
         QMainWindow {
-            background-color: #f5f5f5;
+            background-color: #1e1e1e;
         }
         
         QWidget {
             font-family: 'Segoe UI', Arial, sans-serif;
             font-size: 9pt;
+            color: #e0e0e0;
+            background-color: #1e1e1e;
         }
         
         /* Dock widgets */
@@ -178,24 +182,27 @@ class MainWindow(QMainWindow):
             titlebar-close-icon: url(close.png);
             titlebar-normal-icon: url(float.png);
             font-weight: bold;
+            color: #ffffff;
         }
         
         QDockWidget::title {
-            background-color: #2c3e50;
-            color: white;
+            background-color: #252526;
+            color: #ffffff;
             padding: 8px;
             font-size: 10pt;
             font-weight: bold;
+            border-bottom: 1px solid #3e3e42;
         }
         
         /* Group boxes */
         QGroupBox {
             font-weight: bold;
-            border: 2px solid #d0d0d0;
-            border-radius: 6px;
+            border: 1px solid #3e3e42;
+            border-radius: 4px;
             margin-top: 12px;
-            padding-top: 8px;
-            background-color: white;
+            padding-top: 10px;
+            background-color: #252526;
+            color: #ffffff;
         }
         
         QGroupBox::title {
@@ -203,84 +210,122 @@ class MainWindow(QMainWindow):
             subcontrol-position: top left;
             left: 10px;
             padding: 0 5px;
-            color: #2c3e50;
+            color: #cccccc;
+            background-color: #252526;
         }
         
         /* Buttons */
         QPushButton {
-            background-color: #3498db;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            padding: 8px 16px;
-            font-weight: bold;
-            min-height: 28px;
+            background-color: #0e639c;
+            color: #ffffff;
+            border: 1px solid #0e639c;
+            border-radius: 3px;
+            padding: 6px 14px;
+            font-weight: normal;
+            min-height: 24px;
         }
         
         QPushButton:hover {
-            background-color: #2980b9;
+            background-color: #1177bb;
+            border: 1px solid #1177bb;
         }
         
         QPushButton:pressed {
-            background-color: #21618c;
+            background-color: #0d5a8f;
+            border: 1px solid #0d5a8f;
         }
         
         QPushButton:disabled {
-            background-color: #bdc3c7;
-            color: #7f8c8d;
+            background-color: #3e3e42;
+            color: #808080;
+            border: 1px solid #3e3e42;
         }
         
         /* Primary action buttons */
         QPushButton#primaryButton {
-            background-color: #27ae60;
-            font-size: 10pt;
-            padding: 10px 20px;
+            background-color: #0e639c;
+            border: 1px solid #0e639c;
+            font-size: 9pt;
+            padding: 8px 16px;
+            font-weight: bold;
         }
         
         QPushButton#primaryButton:hover {
-            background-color: #229954;
+            background-color: #1177bb;
+            border: 1px solid #1177bb;
         }
         
         QPushButton#primaryButton:pressed {
-            background-color: #1e8449;
+            background-color: #0d5a8f;
+        }
+        
+        QPushButton#primaryButton:disabled {
+            background-color: #3e3e42;
+            color: #808080;
+            border: 1px solid #3e3e42;
         }
         
         /* Secondary action buttons */
         QPushButton#secondaryButton {
-            background-color: #e67e22;
+            background-color: #5a5a5a;
+            border: 1px solid #5a5a5a;
         }
         
         QPushButton#secondaryButton:hover {
-            background-color: #d35400;
+            background-color: #6e6e6e;
+            border: 1px solid #6e6e6e;
+        }
+        
+        QPushButton#secondaryButton:pressed {
+            background-color: #4a4a4a;
         }
         
         /* Danger buttons */
         QPushButton#dangerButton {
-            background-color: #e74c3c;
+            background-color: #c72e0f;
+            border: 1px solid #c72e0f;
         }
         
         QPushButton#dangerButton:hover {
-            background-color: #c0392b;
+            background-color: #e03e1d;
+            border: 1px solid #e03e1d;
+        }
+        
+        QPushButton#dangerButton:pressed {
+            background-color: #a62a0d;
         }
         
         /* Small buttons */
         QPushButton#smallButton {
-            padding: 4px 8px;
+            padding: 4px 10px;
             min-height: 20px;
             font-size: 8pt;
+            background-color: #3e3e42;
+            border: 1px solid #3e3e42;
+        }
+        
+        QPushButton#smallButton:hover {
+            background-color: #505050;
+            border: 1px solid #505050;
         }
         
         /* Combo boxes */
         QComboBox {
-            border: 1px solid #bdc3c7;
-            border-radius: 4px;
+            border: 1px solid #3e3e42;
+            border-radius: 3px;
             padding: 5px 10px;
-            background-color: white;
-            min-height: 24px;
+            background-color: #3c3c3c;
+            color: #cccccc;
+            min-height: 22px;
         }
         
         QComboBox:hover {
-            border: 1px solid #3498db;
+            border: 1px solid #0e639c;
+            background-color: #404040;
+        }
+        
+        QComboBox:focus {
+            border: 1px solid #007acc;
         }
         
         QComboBox::drop-down {
@@ -289,101 +334,177 @@ class MainWindow(QMainWindow):
         }
         
         QComboBox::down-arrow {
-            width: 12px;
-            height: 12px;
+            width: 0;
+            height: 0;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 5px solid #cccccc;
+            margin-right: 5px;
         }
         
         QComboBox QAbstractItemView {
-            border: 1px solid #bdc3c7;
-            selection-background-color: #3498db;
-            background-color: white;
+            border: 1px solid #3e3e42;
+            selection-background-color: #0e639c;
+            selection-color: #ffffff;
+            background-color: #3c3c3c;
+            color: #cccccc;
+            outline: none;
+        }
+        
+        QComboBox QAbstractItemView::item {
+            padding: 4px;
+            min-height: 20px;
+        }
+        
+        QComboBox QAbstractItemView::item:hover {
+            background-color: #505050;
         }
         
         /* Spin boxes */
         QSpinBox {
-            border: 1px solid #bdc3c7;
-            border-radius: 4px;
-            padding: 5px;
-            background-color: white;
-            min-height: 24px;
+            border: 1px solid #3e3e42;
+            border-radius: 3px;
+            padding: 4px 8px;
+            background-color: #3c3c3c;
+            color: #cccccc;
+            min-height: 22px;
         }
         
         QSpinBox:hover {
-            border: 1px solid #3498db;
+            border: 1px solid #0e639c;
+            background-color: #404040;
+        }
+        
+        QSpinBox:focus {
+            border: 1px solid #007acc;
+        }
+        
+        QSpinBox::up-button, QSpinBox::down-button {
+            background-color: #3e3e42;
+            border: none;
+            width: 16px;
+        }
+        
+        QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+            background-color: #505050;
+        }
+        
+        QSpinBox::up-arrow {
+            width: 0;
+            height: 0;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-bottom: 5px solid #cccccc;
+        }
+        
+        QSpinBox::down-arrow {
+            width: 0;
+            height: 0;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 5px solid #cccccc;
         }
         
         /* Sliders */
         QSlider::groove:horizontal {
-            border: 1px solid #bdc3c7;
-            height: 6px;
-            background: #ecf0f1;
-            border-radius: 3px;
+            border: none;
+            height: 4px;
+            background: #3e3e42;
+            border-radius: 2px;
         }
         
         QSlider::handle:horizontal {
-            background: #3498db;
-            border: 1px solid #2980b9;
-            width: 16px;
-            height: 16px;
+            background: #0e639c;
+            border: 1px solid #0e639c;
+            width: 14px;
+            height: 14px;
             margin: -6px 0;
-            border-radius: 8px;
+            border-radius: 7px;
         }
         
         QSlider::handle:horizontal:hover {
-            background: #2980b9;
+            background: #1177bb;
+            border: 1px solid #1177bb;
+        }
+        
+        QSlider::sub-page:horizontal {
+            background: #0e639c;
+            border-radius: 2px;
         }
         
         /* Checkboxes */
         QCheckBox {
             spacing: 8px;
+            color: #cccccc;
         }
         
         QCheckBox::indicator {
-            width: 18px;
-            height: 18px;
-            border: 2px solid #bdc3c7;
-            border-radius: 3px;
-            background-color: white;
+            width: 16px;
+            height: 16px;
+            border: 1px solid #3e3e42;
+            border-radius: 2px;
+            background-color: #3c3c3c;
         }
         
         QCheckBox::indicator:hover {
-            border: 2px solid #3498db;
+            border: 1px solid #0e639c;
+            background-color: #404040;
         }
         
         QCheckBox::indicator:checked {
-            background-color: #3498db;
-            border: 2px solid #2980b9;
+            background-color: #0e639c;
+            border: 1px solid #0e639c;
+            image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEzIDRMNiAxMUwzIDgiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+Cjwvc3ZnPgo=);
         }
         
         /* Labels */
         QLabel {
-            color: #2c3e50;
+            color: #cccccc;
+            background-color: transparent;
         }
         
         QLabel#headerLabel {
             font-size: 11pt;
             font-weight: bold;
-            color: #2c3e50;
+            color: #ffffff;
             padding: 5px 0px;
         }
         
         QLabel#subHeaderLabel {
             font-size: 9pt;
             font-weight: bold;
-            color: #34495e;
+            color: #e0e0e0;
         }
         
         QLabel#hintLabel {
-            color: #7f8c8d;
+            color: #9d9d9d;
             font-size: 8pt;
             font-style: italic;
         }
         
+        /* Info boxes */
+        QLabel#infoBox {
+            background-color: #2d2d30;
+            border-left: 3px solid #0e639c;
+            padding: 8px;
+            border-radius: 3px;
+            color: #cccccc;
+        }
+        
+        QLabel#warningBox {
+            background-color: #2d2d30;
+            border-left: 3px solid #cca700;
+            padding: 8px;
+            border-radius: 3px;
+            color: #cccccc;
+        }
+        
         /* Status bar */
         QStatusBar {
-            background-color: #34495e;
-            color: white;
+            background-color: #007acc;
+            color: #ffffff;
             font-size: 9pt;
+            border-top: 1px solid #0e639c;
         }
         
         QStatusBar::item {
@@ -392,55 +513,181 @@ class MainWindow(QMainWindow):
         
         /* Toolbar */
         QToolBar {
-            background-color: #ecf0f1;
+            background-color: #2d2d30;
             border: none;
-            padding: 4px;
-            spacing: 8px;
+            border-bottom: 1px solid #3e3e42;
+            padding: 6px;
+            spacing: 6px;
         }
         
         QToolBar::separator {
-            background-color: #bdc3c7;
+            background-color: #3e3e42;
             width: 1px;
-            margin: 4px 8px;
+            margin: 4px 6px;
         }
         
         /* Scroll bars */
         QScrollBar:vertical {
             border: none;
-            background-color: #ecf0f1;
-            width: 12px;
+            background-color: #1e1e1e;
+            width: 14px;
             margin: 0px;
         }
         
         QScrollBar::handle:vertical {
-            background-color: #bdc3c7;
-            border-radius: 6px;
-            min-height: 20px;
+            background-color: #3e3e42;
+            border-radius: 7px;
+            min-height: 30px;
+            margin: 2px;
         }
         
         QScrollBar::handle:vertical:hover {
-            background-color: #95a5a6;
+            background-color: #505050;
         }
         
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
             height: 0px;
         }
         
+        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+            background: none;
+        }
+        
+        QScrollBar:horizontal {
+            border: none;
+            background-color: #1e1e1e;
+            height: 14px;
+            margin: 0px;
+        }
+        
+        QScrollBar::handle:horizontal {
+            background-color: #3e3e42;
+            border-radius: 7px;
+            min-width: 30px;
+            margin: 2px;
+        }
+        
+        QScrollBar::handle:horizontal:hover {
+            background-color: #505050;
+        }
+        
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+            width: 0px;
+        }
+        
+        QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+            background: none;
+        }
+        
+        /* Scroll area */
+        QScrollArea {
+            border: none;
+            background-color: #1e1e1e;
+        }
+        
         /* Progress dialog */
         QProgressDialog {
-            background-color: white;
+            background-color: #2d2d30;
+            color: #cccccc;
         }
         
         QProgressBar {
-            border: 2px solid #bdc3c7;
-            border-radius: 5px;
+            border: 1px solid #3e3e42;
+            border-radius: 3px;
             text-align: center;
-            background-color: #ecf0f1;
+            background-color: #252526;
+            color: #cccccc;
         }
         
         QProgressBar::chunk {
-            background-color: #3498db;
+            background-color: #0e639c;
+            border-radius: 2px;
+        }
+        
+        /* Menu bar */
+        QMenuBar {
+            background-color: #2d2d30;
+            color: #cccccc;
+            border-bottom: 1px solid #3e3e42;
+        }
+        
+        QMenuBar::item {
+            padding: 4px 8px;
+            background-color: transparent;
+        }
+        
+        QMenuBar::item:selected {
+            background-color: #3e3e42;
+        }
+        
+        QMenuBar::item:pressed {
+            background-color: #0e639c;
+        }
+        
+        /* Menus */
+        QMenu {
+            background-color: #252526;
+            color: #cccccc;
+            border: 1px solid #3e3e42;
+        }
+        
+        QMenu::item {
+            padding: 5px 20px 5px 20px;
+        }
+        
+        QMenu::item:selected {
+            background-color: #0e639c;
+            color: #ffffff;
+        }
+        
+        QMenu::separator {
+            height: 1px;
+            background-color: #3e3e42;
+            margin: 4px 0px;
+        }
+        
+        /* Message boxes */
+        QMessageBox {
+            background-color: #2d2d30;
+            color: #cccccc;
+        }
+        
+        QMessageBox QLabel {
+            color: #cccccc;
+        }
+        
+        /* File dialog */
+        QFileDialog {
+            background-color: #2d2d30;
+            color: #cccccc;
+        }
+        
+        /* Input dialog */
+        QInputDialog {
+            background-color: #2d2d30;
+            color: #cccccc;
+        }
+        
+        QInputDialog QLabel {
+            color: #cccccc;
+        }
+        
+        QInputDialog QLineEdit {
+            background-color: #3c3c3c;
+            color: #cccccc;
+            border: 1px solid #3e3e42;
             border-radius: 3px;
+            padding: 4px;
+        }
+        
+        QInputDialog QLineEdit:focus {
+            border: 1px solid #007acc;
+        }
+        
+        /* Color dialog */
+        QColorDialog {
+            background-color: #2d2d30;
+            color: #cccccc;
         }
         """
         self.setStyleSheet(stylesheet)
@@ -528,11 +775,12 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
         
         # Step 1: Open image
-        workflow_label = QLabel("  Workflow:  ")
+        workflow_label = QLabel("Workflow:")
         workflow_label.setObjectName("headerLabel")
+        workflow_label.setStyleSheet("padding: 0px 8px;")
         toolbar.addWidget(workflow_label)
         
-        open_btn = QPushButton("📁 Open Image")
+        open_btn = QPushButton("Open Image")
         open_btn.setObjectName("primaryButton")
         open_btn.clicked.connect(self._open_image)
         open_btn.setToolTip("Step 1: Load an image to segment")
@@ -541,14 +789,15 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         
         # Step 2-7: Draw scribbles (handled in side panel)
-        draw_label = QLabel("→ Draw Scribbles →")
+        draw_label = QLabel("Draw Scribbles")
         draw_label.setObjectName("hintLabel")
+        draw_label.setStyleSheet("padding: 0px 4px;")
         toolbar.addWidget(draw_label)
         
         toolbar.addSeparator()
         
         # Step 3/6: Run segmentation
-        self.segment_btn = QPushButton("▶ Segment")
+        self.segment_btn = QPushButton("Segment")
         self.segment_btn.setObjectName("primaryButton")
         self.segment_btn.clicked.connect(self._run_segmentation)
         self.segment_btn.setEnabled(False)
@@ -556,7 +805,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.segment_btn)
         
         # Step 8: Refine segmentation
-        self.refine_btn = QPushButton("🔧 Refine")
+        self.refine_btn = QPushButton("Refine")
         self.refine_btn.setObjectName("secondaryButton")
         self.refine_btn.clicked.connect(lambda: self._run_segmentation(refine=True))
         self.refine_btn.setEnabled(False)
@@ -566,7 +815,7 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         
         # Step 9: Save results
-        save_btn = QPushButton("💾 Save Mask")
+        save_btn = QPushButton("Save Mask")
         save_btn.clicked.connect(self._save_mask)
         save_btn.setToolTip("Step 9: Export segmentation mask")
         toolbar.addWidget(save_btn)
@@ -574,7 +823,7 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         
         # Reset
-        reset_btn = QPushButton("🔄 Reset All")
+        reset_btn = QPushButton("Reset All")
         reset_btn.setObjectName("dangerButton")
         reset_btn.clicked.connect(self._reset_segmentation)
         reset_btn.setToolTip("Clear all scribbles and segmentation")
@@ -599,8 +848,13 @@ class MainWindow(QMainWindow):
         """Create dockable control panels organized by workflow."""
         
         # LEFT PANEL: Drawing and Class Management (Steps 2-7)
-        draw_dock = QDockWidget("📝 Draw & Classify", self)
+        draw_dock = QDockWidget("Drawing & Classification", self)
         draw_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        
+        # Create scrollable area for left panel
+        draw_scroll = QScrollArea()
+        draw_scroll.setWidgetResizable(True)
+        draw_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
         draw_widget = QWidget()
         draw_layout = QVBoxLayout()
@@ -620,10 +874,8 @@ class MainWindow(QMainWindow):
             "9. Click Refine<br>"
             "10. Save Mask"
         )
-        workflow_guide.setObjectName("hintLabel")
+        workflow_guide.setObjectName("infoBox")
         workflow_guide.setWordWrap(True)
-        workflow_guide.setFrameStyle(QLabel.StyledPanel)
-        workflow_guide.setStyleSheet("padding: 8px; background-color: #fff3cd; border-radius: 4px;")
         draw_layout.addWidget(workflow_guide)
         
         # Class selection and management
@@ -642,7 +894,7 @@ class MainWindow(QMainWindow):
         class_layout.addWidget(self.class_combo)
         
         # Add new class button (prominent)
-        self.add_class_btn = QPushButton("➕ Add New Class")
+        self.add_class_btn = QPushButton("Add New Class")
         self.add_class_btn.setObjectName("primaryButton")
         self.add_class_btn.clicked.connect(self._add_new_class)
         self.add_class_btn.setToolTip("Add a new object class (e.g., dog, chair, person)")
@@ -651,14 +903,14 @@ class MainWindow(QMainWindow):
         # Edit/Remove buttons (smaller, side by side)
         class_btn_layout = QHBoxLayout()
         
-        self.edit_class_btn = QPushButton("✏️ Edit")
+        self.edit_class_btn = QPushButton("Edit Class")
         self.edit_class_btn.setObjectName("smallButton")
         self.edit_class_btn.clicked.connect(self._edit_current_class)
         self.edit_class_btn.setEnabled(False)
         self.edit_class_btn.setToolTip("Change class name or color")
         class_btn_layout.addWidget(self.edit_class_btn)
         
-        self.remove_class_btn = QPushButton("🗑️ Remove")
+        self.remove_class_btn = QPushButton("Remove Class")
         self.remove_class_btn.setObjectName("smallButton")
         self.remove_class_btn.clicked.connect(self._remove_current_class)
         self.remove_class_btn.setEnabled(False)
@@ -691,7 +943,7 @@ class MainWindow(QMainWindow):
         draw_tools_layout.addWidget(self.brush_slider)
         
         # Eraser mode
-        self.eraser_checkbox = QCheckBox("🧹 Eraser Mode")
+        self.eraser_checkbox = QCheckBox("Eraser Mode")
         self.eraser_checkbox.toggled.connect(self._on_eraser_toggled)
         self.eraser_checkbox.setToolTip("Enable to erase scribbles")
         draw_tools_layout.addWidget(self.eraser_checkbox)
@@ -708,28 +960,32 @@ class MainWindow(QMainWindow):
         
         # Quick tips
         tips_label = QLabel(
-            "<b>💡 Tips:</b><br>"
+            "<b>Controls:</b><br>"
             "• Left Click: Draw<br>"
             "• Middle Click: Pan<br>"
             "• Scroll: Zoom<br>"
             "• Ctrl+Z: Undo<br>"
             "• Ctrl+Y: Redo"
         )
-        tips_label.setObjectName("hintLabel")
+        tips_label.setObjectName("infoBox")
         tips_label.setWordWrap(True)
-        tips_label.setFrameStyle(QLabel.StyledPanel)
-        tips_label.setStyleSheet("padding: 8px; background-color: #d1ecf1; border-radius: 4px;")
         draw_layout.addWidget(tips_label)
         
         draw_layout.addStretch()
         
         draw_widget.setLayout(draw_layout)
-        draw_dock.setWidget(draw_widget)
+        draw_scroll.setWidget(draw_widget)
+        draw_dock.setWidget(draw_scroll)
         self.addDockWidget(Qt.LeftDockWidgetArea, draw_dock)
         
         # RIGHT PANEL: Segmentation Settings
-        seg_dock = QDockWidget("⚙️ Segmentation Settings", self)
+        seg_dock = QDockWidget("Segmentation Settings", self)
         seg_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        
+        # Create scrollable area for right panel (important for ensemble mode)
+        seg_scroll = QScrollArea()
+        seg_scroll.setWidgetResizable(True)
+        seg_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
         seg_widget = QWidget()
         seg_layout = QVBoxLayout()
@@ -745,8 +1001,8 @@ class MainWindow(QMainWindow):
         mode_layout.addWidget(mode_label)
         
         self.mode_combo = QComboBox()
-        self.mode_combo.addItem("🎯 Single Color Space", "single")
-        self.mode_combo.addItem("🎲 Ensemble (3 Color Spaces)", "ensemble")
+        self.mode_combo.addItem("Single Color Space", "single")
+        self.mode_combo.addItem("Ensemble (3 Color Spaces)", "ensemble")
         self.mode_combo.setCurrentIndex(0)
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         mode_layout.addWidget(self.mode_combo)
@@ -860,7 +1116,7 @@ class MainWindow(QMainWindow):
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setMinimum(0)
         self.opacity_slider.setMaximum(100)
-        self.opacity_slider.setValue(50)
+        self.opacity_slider.setValue(75)
         self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
         opacity_layout.addWidget(self.opacity_slider)
         
@@ -889,7 +1145,8 @@ class MainWindow(QMainWindow):
         seg_layout.addStretch()
         
         seg_widget.setLayout(seg_layout)
-        seg_dock.setWidget(seg_widget)
+        seg_scroll.setWidget(seg_widget)
+        seg_dock.setWidget(seg_scroll)
         self.addDockWidget(Qt.RightDockWidgetArea, seg_dock)
     
     def _create_status_bar(self):
@@ -1067,12 +1324,15 @@ class MainWindow(QMainWindow):
         # Update canvas
         self.canvas.set_segmentation_mask(mask)
         
+        # Commit scribbles and clear visible session (ready for next iteration)
+        self.canvas.commit_scribbles_after_segmentation()
+        
         # Count classes
         unique_classes = np.unique(mask)
         num_classes = len([c for c in unique_classes if c > 0])
         
         self.status_bar.showMessage(
-            f"Segmentation complete! Found {num_classes} class{'es' if num_classes != 1 else ''}"
+            f"Segmentation complete! Found {num_classes} class{'es' if num_classes != 1 else ''} (scribbles hidden)"
         )
         
         self._update_ui_state()
@@ -1128,7 +1388,7 @@ class MainWindow(QMainWindow):
             self,
             "Save Segmentation Mask",
             "",
-            "NumPy Array (*.npy);;PNG Image (*.png);;All Files (*)"
+            "PNG Image (*.png);;NumPy Array (*.npy);;All Files (*)"
         )
         
         if not file_path:
@@ -1138,15 +1398,42 @@ class MainWindow(QMainWindow):
             if file_path.endswith(".npy"):
                 np.save(file_path, active_session.final_mask)
             else:
-                # Save as indexed PNG with VOC palette
+                # Save as indexed PNG with custom palette based on user's chosen colors
                 img = Image.fromarray(active_session.final_mask, mode="P")
-                img.putpalette(voc_palette().ravel().tolist())
+                
+                # Build custom palette from user's class colors
+                palette = self._build_custom_palette()
+                img.putpalette(palette)
                 img.save(file_path)
             
             self.status_bar.showMessage(f"Saved: {Path(file_path).name}")
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save mask:\n{str(e)}")
+    
+    def _build_custom_palette(self):
+        """Build a 256-color palette based on user's chosen class colors.
+        
+        Note: Segmentation mask values are 0, 1, 2... which correspond to 
+        class_ids 1, 2, 3... (offset by 1)
+        """
+        # Create a palette array (256 colors x 3 RGB values = 768 values)
+        palette = np.zeros(768, dtype=np.uint8)
+        
+        # Set colors for each class based on user's choices
+        # Mask value i corresponds to class_id (i+1)
+        for class_id, class_info in self.classes.items():
+            if class_id < 256:  # Palette can only hold 256 colors
+                color = class_info["color"]
+                # Map class_id to mask_value: mask_value = class_id - 1
+                mask_value = class_id - 1
+                if mask_value >= 0:  # Ensure valid index
+                    idx = mask_value * 3
+                    palette[idx] = color.red()
+                    palette[idx + 1] = color.green()
+                    palette[idx + 2] = color.blue()
+        
+        return palette.tolist()
     
     def _save_session(self):
         """Save session state."""

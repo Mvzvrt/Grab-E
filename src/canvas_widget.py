@@ -28,6 +28,7 @@ class ScribbleLayer:
     def __init__(self, class_id: int, color: QColor, points: List[QPoint], brush_size: int):
         self.class_id = class_id
         self.color = color
+        # Store points in IMAGE coordinates (not view coordinates)
         self.points = points.copy()
         self.brush_size = brush_size
 
@@ -83,6 +84,9 @@ class CanvasWidget(QWidget):
         self.undo_stack: List[List[ScribbleLayer]] = []
         self.redo_stack: List[List[ScribbleLayer]] = []
         
+        # Current drawing session scribbles (visible in UI)
+        self.current_session_scribbles: List[ScribbleLayer] = []
+        
         # Drawing state
         self.is_drawing = False
         self.current_stroke_points: List[QPoint] = []
@@ -120,8 +124,9 @@ class CanvasWidget(QWidget):
         # Reset view
         self.reset_view()
         
-        # Clear scribbles
+        # Clear all scribbles (both accumulated and current session)
         self.clear_scribbles(emit_signal=False)
+        self.current_session_scribbles.clear()
         
         self.update()
     
@@ -148,6 +153,17 @@ class CanvasWidget(QWidget):
     def set_segmentation_opacity(self, opacity: float) -> None:
         """Set segmentation overlay opacity (0.0 to 1.0)."""
         self.segmentation_opacity = max(0.0, min(1.0, opacity))
+        self.update()
+    
+    def commit_scribbles_after_segmentation(self) -> None:
+        """
+        Commit current session scribbles to permanent storage and clear the visible session.
+        Called after segmentation/refinement to hide old scribbles and make room for new ones.
+        The scribbles remain in self.scribbles for GrabCut but disappear from UI.
+        """
+        # Current session scribbles are already in self.scribbles (for GrabCut)
+        # Just clear the visible session to make room for new scribbles
+        self.current_session_scribbles.clear()
         self.update()
     
     def set_current_class(self, class_id: int) -> None:
@@ -241,10 +257,10 @@ class CanvasWidget(QWidget):
         for scribble in self.scribbles:
             class_id = scribble.class_id  # Use class_id directly (1, 2, 3...)
             
-            # Rasterize the stroke
+            # Rasterize the stroke (points are already in image coordinates)
             for i in range(len(scribble.points) - 1):
-                p1 = self.view_to_image_coords(scribble.points[i])
-                p2 = self.view_to_image_coords(scribble.points[i + 1])
+                p1 = scribble.points[i]
+                p2 = scribble.points[i + 1]
                 
                 # Draw line on annotations
                 self._draw_line_on_array(
@@ -364,21 +380,23 @@ class CanvasWidget(QWidget):
         if self.show_segmentation and self.segmentation_mask is not None:
             self._draw_segmentation_overlay(painter, target_rect)
         
-        # Draw scribbles
-        for scribble in self.scribbles:
+        # Draw scribbles (only current session - visible scribbles)
+        for scribble in self.current_session_scribbles:
             self._draw_scribble(painter, scribble)
         
-        # Draw current stroke
+        # Draw current stroke (always show while drawing)
         if self.is_drawing and len(self.current_stroke_points) > 1:
             color = self.get_class_color(self.current_class) if not self.eraser_mode else QColor(255, 255, 255)
             pen = QPen(color, self.brush_size * self.zoom_factor, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
             painter.setPen(pen)
             
+            # Convert image coordinates to view coordinates for drawing
             path = QPainterPath()
-            path.moveTo(self.current_stroke_points[0])
-            for pt in self.current_stroke_points[1:]:
-                path.lineTo(pt)
-            painter.drawPath(path)
+            view_pt = self.image_to_view_coords(self.current_stroke_points[0])
+            path.moveTo(view_pt)
+            for img_pt in self.current_stroke_points[1:]:
+                view_pt = self.image_to_view_coords(img_pt)
+                path.lineTo(view_pt)
             painter.drawPath(path)
     
     def _draw_segmentation_overlay(self, painter: QPainter, target_rect: QRect) -> None:
@@ -416,7 +434,7 @@ class CanvasWidget(QWidget):
         painter.drawImage(target_rect, overlay_img)
     
     def _draw_scribble(self, painter: QPainter, scribble: ScribbleLayer) -> None:
-        """Draw a scribble stroke."""
+        """Draw a scribble stroke (converting from image to view coordinates)."""
         if len(scribble.points) < 2:
             return
         
@@ -424,10 +442,13 @@ class CanvasWidget(QWidget):
                   Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
         painter.setPen(pen)
         
+        # Convert image coordinates to view coordinates for drawing
         path = QPainterPath()
-        path.moveTo(scribble.points[0])
-        for pt in scribble.points[1:]:
-            path.lineTo(pt)
+        view_pt = self.image_to_view_coords(scribble.points[0])
+        path.moveTo(view_pt)
+        for img_pt in scribble.points[1:]:
+            view_pt = self.image_to_view_coords(img_pt)
+            path.lineTo(view_pt)
         painter.drawPath(path)
     
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -438,9 +459,10 @@ class CanvasWidget(QWidget):
             self.last_pan_point = event.pos()
             self.setCursor(Qt.ClosedHandCursor)
         elif event.button() == Qt.LeftButton:
-            # Start drawing
+            # Start drawing - store in IMAGE coordinates
             self.is_drawing = True
-            self.current_stroke_points = [event.pos()]
+            img_pos = self.view_to_image_coords(event.pos())
+            self.current_stroke_points = [img_pos]
     
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         """Handle mouse move."""
@@ -451,8 +473,9 @@ class CanvasWidget(QWidget):
             self.last_pan_point = event.pos()
             self.update()
         elif self.is_drawing:
-            # Continue stroke
-            self.current_stroke_points.append(event.pos())
+            # Continue stroke - store in IMAGE coordinates
+            img_pos = self.view_to_image_coords(event.pos())
+            self.current_stroke_points.append(img_pos)
             self.update()
     
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
@@ -470,34 +493,36 @@ class CanvasWidget(QWidget):
                 self.undo_stack.append([s for s in self.scribbles])
                 self.redo_stack.clear()
                 
-                # Create scribble layer
+                # Create scribble layer (points already in IMAGE coordinates)
                 if self.eraser_mode:
                     # Remove scribbles near eraser path
                     self._erase_scribbles()
                 else:
-                    # Add new scribble
+                    # Add new scribble to both permanent storage and current session
                     color = self.get_class_color(self.current_class)
                     scribble = ScribbleLayer(
                         self.current_class, color, 
                         self.current_stroke_points, self.brush_size
                     )
-                    self.scribbles.append(scribble)
+                    self.scribbles.append(scribble)  # For GrabCut refinement
+                    self.current_session_scribbles.append(scribble)  # For UI visibility
                 
                 self.current_stroke_points.clear()
                 self.scribbles_changed.emit()
                 self.update()
     
     def _erase_scribbles(self) -> None:
-        """Remove scribbles near the eraser path."""
+        """Remove scribbles near the eraser path (in image coordinates)."""
         # Simple implementation: remove scribbles that overlap with eraser path
         # More sophisticated version could partially erase strokes
         
-        eraser_radius = self.brush_size * self.zoom_factor
+        eraser_radius = self.brush_size  # Work in image space
         
         to_remove = []
         for idx, scribble in enumerate(self.scribbles):
             for scribble_pt in scribble.points:
                 for eraser_pt in self.current_stroke_points:
+                    # Both are now in image coordinates
                     dx = scribble_pt.x() - eraser_pt.x()
                     dy = scribble_pt.y() - eraser_pt.y()
                     dist = (dx * dx + dy * dy) ** 0.5
