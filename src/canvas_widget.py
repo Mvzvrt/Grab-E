@@ -198,9 +198,15 @@ class CanvasWidget(QWidget):
     
     def clear_scribbles(self, emit_signal: bool = True) -> None:
         """Clear all scribbles."""
-        if self.scribbles:
+        if self.scribbles or self.current_session_scribbles:
+            # Save current accumulated scribbles to undo stack
             self.undo_stack.append([s for s in self.scribbles])
+
+            # Clear both accumulated and current-session (visible) scribbles
             self.scribbles.clear()
+            self.current_session_scribbles.clear()
+
+            # Clear redo stack and update UI
             self.redo_stack.clear()
             if emit_signal:
                 self.scribbles_changed.emit()
@@ -519,6 +525,7 @@ class CanvasWidget(QWidget):
         eraser_radius = self.brush_size  # Work in image space
         
         to_remove = []
+        removed_objects = set()
         for idx, scribble in enumerate(self.scribbles):
             for scribble_pt in scribble.points:
                 for eraser_pt in self.current_stroke_points:
@@ -529,6 +536,7 @@ class CanvasWidget(QWidget):
                     
                     if dist < eraser_radius:
                         to_remove.append(idx)
+                        removed_objects.add(scribble)
                         break
                 if idx in to_remove:
                     break
@@ -536,6 +544,10 @@ class CanvasWidget(QWidget):
         # Remove in reverse order to maintain indices
         for idx in sorted(set(to_remove), reverse=True):
             del self.scribbles[idx]
+
+        # Also remove the same scribble objects from current session visibility
+        if removed_objects:
+            self.current_session_scribbles = [s for s in self.current_session_scribbles if s not in removed_objects]
     
     def wheelEvent(self, event: QWheelEvent) -> None:
         """Handle mouse wheel for zooming."""

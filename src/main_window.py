@@ -1123,24 +1123,7 @@ class MainWindow(QMainWindow):
         opacity_group.setLayout(opacity_layout)
         seg_layout.addWidget(opacity_group)
         
-        # Advanced options
-        advanced_group = QGroupBox("Advanced Options")
-        advanced_layout = QVBoxLayout()
-        advanced_layout.setSpacing(8)
-        
-        self.seed_refine_checkbox = QCheckBox("Apply Seed Refinement")
-        self.seed_refine_checkbox.setChecked(True)
-        self.seed_refine_checkbox.setToolTip("Apply MGC geodesic seed expansion (recommended)")
-        
-        self.post_smooth_checkbox = QCheckBox("Apply Post-Smoothing")
-        self.post_smooth_checkbox.setChecked(True)
-        self.post_smooth_checkbox.setToolTip("Apply MGC guided filter smoothing (recommended)")
-        
-        advanced_layout.addWidget(self.seed_refine_checkbox)
-        advanced_layout.addWidget(self.post_smooth_checkbox)
-        
-        advanced_group.setLayout(advanced_layout)
-        seg_layout.addWidget(advanced_group)
+    # Advanced options (removed: seed refinement and post-smoothing controls now automatic per action)
         
         seg_layout.addStretch()
         
@@ -1207,8 +1190,8 @@ class MainWindow(QMainWindow):
                 img_array,
                 color_space=color_space,
                 gc_iters=gc_iters,
-                apply_seed_refinement=self.seed_refine_checkbox.isChecked(),
-                apply_post_smoothing=self.post_smooth_checkbox.isChecked()
+                apply_seed_refinement=True,
+                apply_post_smoothing=True
             )
             
             # Ensemble session
@@ -1224,8 +1207,8 @@ class MainWindow(QMainWindow):
                 img_array,
                 color_spaces=ensemble_spaces,
                 gc_iters=gc_iters,
-                apply_seed_refinement=self.seed_refine_checkbox.isChecked(),
-                apply_post_smoothing=self.post_smooth_checkbox.isChecked(),
+                apply_seed_refinement=True,
+                apply_post_smoothing=True,
                 label_tie_pref=tie_map.get(tie_strategy, 0)
             )
             
@@ -1262,12 +1245,18 @@ class MainWindow(QMainWindow):
             )
             return
         
+    # Decide per-action defaults:
+    # - Segment (refine=False): seed refinement ON, post-smoothing ON
+    # - Refine  (refine=True):  seed refinement OFF, post-smoothing ON
+    apply_seed = not refine
+    apply_smooth = True
+
         # Update session parameters
         if mode == "single":
             self.session.color_space = self.color_space_combo.currentData()
             self.session.gc_iters = self.iters_spinbox.value()
-            self.session.apply_seed_refinement = self.seed_refine_checkbox.isChecked()
-            self.session.apply_post_smoothing = self.post_smooth_checkbox.isChecked()
+            self.session.apply_seed_refinement = apply_seed
+            self.session.apply_post_smoothing = apply_smooth
             
             # Update feature space if changed
             if self.session.color_space != self.session.color_space:
@@ -1277,8 +1266,8 @@ class MainWindow(QMainWindow):
         else:  # ensemble
             self.ensemble_session.update_settings(
                 gc_iters=self.iters_spinbox.value(),
-                apply_seed_refinement=self.seed_refine_checkbox.isChecked(),
-                apply_post_smoothing=self.post_smooth_checkbox.isChecked()
+                apply_seed_refinement=apply_seed,
+                apply_post_smoothing=apply_smooth
             )
             self.ensemble_session.update_annotations(annotations)
         
@@ -1366,8 +1355,8 @@ class MainWindow(QMainWindow):
                     self.image_array,
                     color_space=color_space,
                     gc_iters=gc_iters,
-                    apply_seed_refinement=self.seed_refine_checkbox.isChecked(),
-                    apply_post_smoothing=self.post_smooth_checkbox.isChecked()
+                    apply_seed_refinement=True,
+                    apply_post_smoothing=True
                 )
             
             self.status_bar.showMessage("Reset complete")
