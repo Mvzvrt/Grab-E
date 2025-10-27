@@ -20,9 +20,9 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QSpinBox, QSlider, QComboBox, QFileDialog, QMessageBox,
     QToolBar, QStatusBar, QDockWidget, QGroupBox, QCheckBox,
-    QProgressDialog, QSplitter, QColorDialog, QInputDialog
+    QProgressDialog, QSplitter, QColorDialog, QInputDialog, QSizePolicy
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize
 from PySide6.QtGui import QAction, QKeySequence, QIcon, QColor
 from PIL import Image
 
@@ -146,6 +146,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Interactive GrabCut Segmentation")
         self.setGeometry(100, 100, 1400, 900)
         
+        # Apply modern stylesheet
+        self._apply_stylesheet()
+        
         self._create_menu_bar()
         self._create_toolbar()
         self._create_central_widget()
@@ -156,6 +159,291 @@ class MainWindow(QMainWindow):
         self._initialize_default_classes()
         
         self._update_ui_state()
+    
+    def _apply_stylesheet(self):
+        """Apply modern stylesheet to the application."""
+        stylesheet = """
+        /* Main window and general widgets */
+        QMainWindow {
+            background-color: #f5f5f5;
+        }
+        
+        QWidget {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            font-size: 9pt;
+        }
+        
+        /* Dock widgets */
+        QDockWidget {
+            titlebar-close-icon: url(close.png);
+            titlebar-normal-icon: url(float.png);
+            font-weight: bold;
+        }
+        
+        QDockWidget::title {
+            background-color: #2c3e50;
+            color: white;
+            padding: 8px;
+            font-size: 10pt;
+            font-weight: bold;
+        }
+        
+        /* Group boxes */
+        QGroupBox {
+            font-weight: bold;
+            border: 2px solid #d0d0d0;
+            border-radius: 6px;
+            margin-top: 12px;
+            padding-top: 8px;
+            background-color: white;
+        }
+        
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            subcontrol-position: top left;
+            left: 10px;
+            padding: 0 5px;
+            color: #2c3e50;
+        }
+        
+        /* Buttons */
+        QPushButton {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            font-weight: bold;
+            min-height: 28px;
+        }
+        
+        QPushButton:hover {
+            background-color: #2980b9;
+        }
+        
+        QPushButton:pressed {
+            background-color: #21618c;
+        }
+        
+        QPushButton:disabled {
+            background-color: #bdc3c7;
+            color: #7f8c8d;
+        }
+        
+        /* Primary action buttons */
+        QPushButton#primaryButton {
+            background-color: #27ae60;
+            font-size: 10pt;
+            padding: 10px 20px;
+        }
+        
+        QPushButton#primaryButton:hover {
+            background-color: #229954;
+        }
+        
+        QPushButton#primaryButton:pressed {
+            background-color: #1e8449;
+        }
+        
+        /* Secondary action buttons */
+        QPushButton#secondaryButton {
+            background-color: #e67e22;
+        }
+        
+        QPushButton#secondaryButton:hover {
+            background-color: #d35400;
+        }
+        
+        /* Danger buttons */
+        QPushButton#dangerButton {
+            background-color: #e74c3c;
+        }
+        
+        QPushButton#dangerButton:hover {
+            background-color: #c0392b;
+        }
+        
+        /* Small buttons */
+        QPushButton#smallButton {
+            padding: 4px 8px;
+            min-height: 20px;
+            font-size: 8pt;
+        }
+        
+        /* Combo boxes */
+        QComboBox {
+            border: 1px solid #bdc3c7;
+            border-radius: 4px;
+            padding: 5px 10px;
+            background-color: white;
+            min-height: 24px;
+        }
+        
+        QComboBox:hover {
+            border: 1px solid #3498db;
+        }
+        
+        QComboBox::drop-down {
+            border: none;
+            width: 20px;
+        }
+        
+        QComboBox::down-arrow {
+            width: 12px;
+            height: 12px;
+        }
+        
+        QComboBox QAbstractItemView {
+            border: 1px solid #bdc3c7;
+            selection-background-color: #3498db;
+            background-color: white;
+        }
+        
+        /* Spin boxes */
+        QSpinBox {
+            border: 1px solid #bdc3c7;
+            border-radius: 4px;
+            padding: 5px;
+            background-color: white;
+            min-height: 24px;
+        }
+        
+        QSpinBox:hover {
+            border: 1px solid #3498db;
+        }
+        
+        /* Sliders */
+        QSlider::groove:horizontal {
+            border: 1px solid #bdc3c7;
+            height: 6px;
+            background: #ecf0f1;
+            border-radius: 3px;
+        }
+        
+        QSlider::handle:horizontal {
+            background: #3498db;
+            border: 1px solid #2980b9;
+            width: 16px;
+            height: 16px;
+            margin: -6px 0;
+            border-radius: 8px;
+        }
+        
+        QSlider::handle:horizontal:hover {
+            background: #2980b9;
+        }
+        
+        /* Checkboxes */
+        QCheckBox {
+            spacing: 8px;
+        }
+        
+        QCheckBox::indicator {
+            width: 18px;
+            height: 18px;
+            border: 2px solid #bdc3c7;
+            border-radius: 3px;
+            background-color: white;
+        }
+        
+        QCheckBox::indicator:hover {
+            border: 2px solid #3498db;
+        }
+        
+        QCheckBox::indicator:checked {
+            background-color: #3498db;
+            border: 2px solid #2980b9;
+        }
+        
+        /* Labels */
+        QLabel {
+            color: #2c3e50;
+        }
+        
+        QLabel#headerLabel {
+            font-size: 11pt;
+            font-weight: bold;
+            color: #2c3e50;
+            padding: 5px 0px;
+        }
+        
+        QLabel#subHeaderLabel {
+            font-size: 9pt;
+            font-weight: bold;
+            color: #34495e;
+        }
+        
+        QLabel#hintLabel {
+            color: #7f8c8d;
+            font-size: 8pt;
+            font-style: italic;
+        }
+        
+        /* Status bar */
+        QStatusBar {
+            background-color: #34495e;
+            color: white;
+            font-size: 9pt;
+        }
+        
+        QStatusBar::item {
+            border: none;
+        }
+        
+        /* Toolbar */
+        QToolBar {
+            background-color: #ecf0f1;
+            border: none;
+            padding: 4px;
+            spacing: 8px;
+        }
+        
+        QToolBar::separator {
+            background-color: #bdc3c7;
+            width: 1px;
+            margin: 4px 8px;
+        }
+        
+        /* Scroll bars */
+        QScrollBar:vertical {
+            border: none;
+            background-color: #ecf0f1;
+            width: 12px;
+            margin: 0px;
+        }
+        
+        QScrollBar::handle:vertical {
+            background-color: #bdc3c7;
+            border-radius: 6px;
+            min-height: 20px;
+        }
+        
+        QScrollBar::handle:vertical:hover {
+            background-color: #95a5a6;
+        }
+        
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0px;
+        }
+        
+        /* Progress dialog */
+        QProgressDialog {
+            background-color: white;
+        }
+        
+        QProgressBar {
+            border: 2px solid #bdc3c7;
+            border-radius: 5px;
+            text-align: center;
+            background-color: #ecf0f1;
+        }
+        
+        QProgressBar::chunk {
+            background-color: #3498db;
+            border-radius: 3px;
+        }
+        """
+        self.setStyleSheet(stylesheet)
     
     def _create_menu_bar(self):
         """Create menu bar."""
@@ -233,36 +521,69 @@ class MainWindow(QMainWindow):
         help_menu.addAction(about_action)
     
     def _create_toolbar(self):
-        """Create toolbar."""
+        """Create toolbar with workflow-oriented actions."""
         toolbar = QToolBar("Main Toolbar")
         toolbar.setMovable(False)
+        toolbar.setIconSize(QSize(24, 24))
         self.addToolBar(toolbar)
         
-        # Open image
-        open_btn = QPushButton("Open Image")
+        # Step 1: Open image
+        workflow_label = QLabel("  Workflow:  ")
+        workflow_label.setObjectName("headerLabel")
+        toolbar.addWidget(workflow_label)
+        
+        open_btn = QPushButton("📁 Open Image")
+        open_btn.setObjectName("primaryButton")
         open_btn.clicked.connect(self._open_image)
+        open_btn.setToolTip("Step 1: Load an image to segment")
         toolbar.addWidget(open_btn)
         
         toolbar.addSeparator()
         
-        # Run segmentation
-        self.segment_btn = QPushButton("Run Segmentation")
+        # Step 2-7: Draw scribbles (handled in side panel)
+        draw_label = QLabel("→ Draw Scribbles →")
+        draw_label.setObjectName("hintLabel")
+        toolbar.addWidget(draw_label)
+        
+        toolbar.addSeparator()
+        
+        # Step 3/6: Run segmentation
+        self.segment_btn = QPushButton("▶ Segment")
+        self.segment_btn.setObjectName("primaryButton")
         self.segment_btn.clicked.connect(self._run_segmentation)
         self.segment_btn.setEnabled(False)
+        self.segment_btn.setToolTip("Step 3/6: Run segmentation with current scribbles")
         toolbar.addWidget(self.segment_btn)
         
-        # Refine segmentation
-        self.refine_btn = QPushButton("Refine (Keep Models)")
+        # Step 8: Refine segmentation
+        self.refine_btn = QPushButton("🔧 Refine")
+        self.refine_btn.setObjectName("secondaryButton")
         self.refine_btn.clicked.connect(lambda: self._run_segmentation(refine=True))
         self.refine_btn.setEnabled(False)
+        self.refine_btn.setToolTip("Step 8: Refine segmentation (keeps existing models)")
         toolbar.addWidget(self.refine_btn)
         
         toolbar.addSeparator()
         
+        # Step 9: Save results
+        save_btn = QPushButton("💾 Save Mask")
+        save_btn.clicked.connect(self._save_mask)
+        save_btn.setToolTip("Step 9: Export segmentation mask")
+        toolbar.addWidget(save_btn)
+        
+        toolbar.addSeparator()
+        
         # Reset
-        reset_btn = QPushButton("Reset All")
+        reset_btn = QPushButton("🔄 Reset All")
+        reset_btn.setObjectName("dangerButton")
         reset_btn.clicked.connect(self._reset_segmentation)
+        reset_btn.setToolTip("Clear all scribbles and segmentation")
         toolbar.addWidget(reset_btn)
+        
+        # Add stretch to push everything to the left
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        toolbar.addWidget(spacer)
     
     def _create_central_widget(self):
         """Create central widget with canvas."""
@@ -275,47 +596,70 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.canvas)
     
     def _create_dock_widgets(self):
-        """Create dockable control panels."""
+        """Create dockable control panels organized by workflow."""
         
-        # Drawing controls
-        draw_dock = QDockWidget("Drawing Tools", self)
+        # LEFT PANEL: Drawing and Class Management (Steps 2-7)
+        draw_dock = QDockWidget("📝 Draw & Classify", self)
         draw_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         
         draw_widget = QWidget()
         draw_layout = QVBoxLayout()
+        draw_layout.setSpacing(12)
         
-        # Class selection
-        class_group = QGroupBox("Classes")
+        # Workflow guide at top
+        workflow_guide = QLabel(
+            "<b>Workflow Guide:</b><br>"
+            "1. Open Image<br>"
+            "2. Add Classes (objects to segment)<br>"
+            "3. Draw Scribbles per class<br>"
+            "4. Click Segment<br>"
+            "5. Add more classes if needed<br>"
+            "6. Add Background scribbles<br>"
+            "7. Click Segment again<br>"
+            "8. Add refinement scribbles<br>"
+            "9. Click Refine<br>"
+            "10. Save Mask"
+        )
+        workflow_guide.setObjectName("hintLabel")
+        workflow_guide.setWordWrap(True)
+        workflow_guide.setFrameStyle(QLabel.StyledPanel)
+        workflow_guide.setStyleSheet("padding: 8px; background-color: #fff3cd; border-radius: 4px;")
+        draw_layout.addWidget(workflow_guide)
+        
+        # Class selection and management
+        class_group = QGroupBox("Step 2-5: Class Management")
         class_layout = QVBoxLayout()
+        class_layout.setSpacing(8)
         
-        # Info label
-        info_label = QLabel("Define your classes, then draw scribbles:")
-        info_label.setWordWrap(True)
-        info_label.setStyleSheet("color: gray; font-size: 10px;")
-        class_layout.addWidget(info_label)
+        # Current class selector
+        class_select_label = QLabel("Current Class:")
+        class_select_label.setObjectName("subHeaderLabel")
+        class_layout.addWidget(class_select_label)
         
-        # Class list
         self.class_combo = QComboBox()
         self.class_combo.setToolTip("Select which class to draw scribbles for")
         self.class_combo.currentIndexChanged.connect(self._on_class_changed)
         class_layout.addWidget(self.class_combo)
         
-        # Add class button
-        self.add_class_btn = QPushButton("+ Add New Class")
+        # Add new class button (prominent)
+        self.add_class_btn = QPushButton("➕ Add New Class")
+        self.add_class_btn.setObjectName("primaryButton")
         self.add_class_btn.clicked.connect(self._add_new_class)
-        self.add_class_btn.setToolTip("Add a new object class (dog, chair, person, etc.)")
+        self.add_class_btn.setToolTip("Add a new object class (e.g., dog, chair, person)")
         class_layout.addWidget(self.add_class_btn)
         
-        # Edit/Remove buttons
+        # Edit/Remove buttons (smaller, side by side)
         class_btn_layout = QHBoxLayout()
         
-        self.edit_class_btn = QPushButton("Edit")
+        self.edit_class_btn = QPushButton("✏️ Edit")
+        self.edit_class_btn.setObjectName("smallButton")
         self.edit_class_btn.clicked.connect(self._edit_current_class)
         self.edit_class_btn.setEnabled(False)
         self.edit_class_btn.setToolTip("Change class name or color")
         class_btn_layout.addWidget(self.edit_class_btn)
         
-        self.remove_class_btn = QPushButton("Remove")
+        self.remove_class_btn = QPushButton("🗑️ Remove")
+        self.remove_class_btn.setObjectName("smallButton")
         self.remove_class_btn.clicked.connect(self._remove_current_class)
         self.remove_class_btn.setEnabled(False)
         self.remove_class_btn.setToolTip("Delete this class")
@@ -326,39 +670,56 @@ class MainWindow(QMainWindow):
         class_group.setLayout(class_layout)
         draw_layout.addWidget(class_group)
         
+        # Drawing tools
+        draw_tools_group = QGroupBox("Step 3-8: Drawing Tools")
+        draw_tools_layout = QVBoxLayout()
+        draw_tools_layout.setSpacing(10)
+        
         # Brush size
-        brush_group = QGroupBox("Brush Size")
-        brush_layout = QVBoxLayout()
+        brush_size_label = QLabel("Brush Size:")
+        brush_size_label.setObjectName("subHeaderLabel")
+        draw_tools_layout.addWidget(brush_size_label)
+        
+        self.brush_label = QLabel("Size: 5 px")
+        draw_tools_layout.addWidget(self.brush_label)
         
         self.brush_slider = QSlider(Qt.Horizontal)
         self.brush_slider.setMinimum(1)
         self.brush_slider.setMaximum(50)
         self.brush_slider.setValue(5)
         self.brush_slider.valueChanged.connect(self._on_brush_size_changed)
+        draw_tools_layout.addWidget(self.brush_slider)
         
-        self.brush_label = QLabel("Size: 5")
-        
-        brush_layout.addWidget(self.brush_label)
-        brush_layout.addWidget(self.brush_slider)
-        
-        brush_group.setLayout(brush_layout)
-        draw_layout.addWidget(brush_group)
-        
-        # Eraser
-        eraser_group = QGroupBox("Eraser")
-        eraser_layout = QVBoxLayout()
-        
-        self.eraser_checkbox = QCheckBox("Eraser Mode")
+        # Eraser mode
+        self.eraser_checkbox = QCheckBox("🧹 Eraser Mode")
         self.eraser_checkbox.toggled.connect(self._on_eraser_toggled)
-        eraser_layout.addWidget(self.eraser_checkbox)
+        self.eraser_checkbox.setToolTip("Enable to erase scribbles")
+        draw_tools_layout.addWidget(self.eraser_checkbox)
         
-        eraser_group.setLayout(eraser_layout)
-        draw_layout.addWidget(eraser_group)
-        
-        # Clear button
+        # Clear scribbles button
         clear_scribbles_btn = QPushButton("Clear All Scribbles")
+        clear_scribbles_btn.setObjectName("dangerButton")
         clear_scribbles_btn.clicked.connect(self._clear_scribbles)
-        draw_layout.addWidget(clear_scribbles_btn)
+        clear_scribbles_btn.setToolTip("Remove all drawn scribbles")
+        draw_tools_layout.addWidget(clear_scribbles_btn)
+        
+        draw_tools_group.setLayout(draw_tools_layout)
+        draw_layout.addWidget(draw_tools_group)
+        
+        # Quick tips
+        tips_label = QLabel(
+            "<b>💡 Tips:</b><br>"
+            "• Left Click: Draw<br>"
+            "• Middle Click: Pan<br>"
+            "• Scroll: Zoom<br>"
+            "• Ctrl+Z: Undo<br>"
+            "• Ctrl+Y: Redo"
+        )
+        tips_label.setObjectName("hintLabel")
+        tips_label.setWordWrap(True)
+        tips_label.setFrameStyle(QLabel.StyledPanel)
+        tips_label.setStyleSheet("padding: 8px; background-color: #d1ecf1; border-radius: 4px;")
+        draw_layout.addWidget(tips_label)
         
         draw_layout.addStretch()
         
@@ -366,32 +727,46 @@ class MainWindow(QMainWindow):
         draw_dock.setWidget(draw_widget)
         self.addDockWidget(Qt.LeftDockWidgetArea, draw_dock)
         
-        # Segmentation controls
-        seg_dock = QDockWidget("Segmentation Settings", self)
+        # RIGHT PANEL: Segmentation Settings
+        seg_dock = QDockWidget("⚙️ Segmentation Settings", self)
         seg_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         
         seg_widget = QWidget()
         seg_layout = QVBoxLayout()
+        seg_layout.setSpacing(12)
         
         # Mode selection (Single vs Ensemble)
         mode_group = QGroupBox("Segmentation Mode")
         mode_layout = QVBoxLayout()
+        mode_layout.setSpacing(8)
+        
+        mode_label = QLabel("Choose mode:")
+        mode_label.setObjectName("subHeaderLabel")
+        mode_layout.addWidget(mode_label)
         
         self.mode_combo = QComboBox()
-        self.mode_combo.addItem("Single Color Space", "single")
-        self.mode_combo.addItem("Ensemble (Majority Voting)", "ensemble")
+        self.mode_combo.addItem("🎯 Single Color Space", "single")
+        self.mode_combo.addItem("🎲 Ensemble (3 Color Spaces)", "ensemble")
         self.mode_combo.setCurrentIndex(0)
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        
-        mode_layout.addWidget(QLabel("Mode:"))
         mode_layout.addWidget(self.mode_combo)
+        
+        mode_hint = QLabel("Single: Faster, good for most images<br>Ensemble: More robust, uses voting")
+        mode_hint.setObjectName("hintLabel")
+        mode_hint.setWordWrap(True)
+        mode_layout.addWidget(mode_hint)
         
         mode_group.setLayout(mode_layout)
         seg_layout.addWidget(mode_group)
         
         # Single color space selection
-        self.single_color_space_group = QGroupBox("Color Space")
+        self.single_color_space_group = QGroupBox("Color Space (Single Mode)")
         single_color_space_layout = QVBoxLayout()
+        single_color_space_layout.setSpacing(8)
+        
+        cs_label = QLabel("Feature Space:")
+        cs_label.setObjectName("subHeaderLabel")
+        single_color_space_layout.addWidget(cs_label)
         
         self.color_space_combo = QComboBox()
         color_spaces = [
@@ -402,16 +777,20 @@ class MainWindow(QMainWindow):
         for cs in color_spaces:
             self.color_space_combo.addItem(cs, cs)
         self.color_space_combo.setCurrentText("ruderman_lab")  # Default: top performer
-        
-        single_color_space_layout.addWidget(QLabel("Feature Space:"))
         single_color_space_layout.addWidget(self.color_space_combo)
+        
+        cs_hint = QLabel("Default (ruderman_lab) works best for most images")
+        cs_hint.setObjectName("hintLabel")
+        cs_hint.setWordWrap(True)
+        single_color_space_layout.addWidget(cs_hint)
         
         self.single_color_space_group.setLayout(single_color_space_layout)
         seg_layout.addWidget(self.single_color_space_group)
         
         # Ensemble color space selection
-        self.ensemble_group = QGroupBox("Ensemble Color Spaces")
+        self.ensemble_group = QGroupBox("Color Spaces (Ensemble Mode)")
         ensemble_layout = QVBoxLayout()
+        ensemble_layout.setSpacing(8)
         
         # Create three dropdowns for ensemble
         self.ensemble_combo1 = QComboBox()
@@ -450,14 +829,22 @@ class MainWindow(QMainWindow):
         # GrabCut iterations
         iters_group = QGroupBox("GrabCut Iterations")
         iters_layout = QVBoxLayout()
+        iters_layout.setSpacing(8)
+        
+        iters_label = QLabel("Iterations per run:")
+        iters_label.setObjectName("subHeaderLabel")
+        iters_layout.addWidget(iters_label)
         
         self.iters_spinbox = QSpinBox()
         self.iters_spinbox.setMinimum(1)
         self.iters_spinbox.setMaximum(20)
         self.iters_spinbox.setValue(5)
-        
-        iters_layout.addWidget(QLabel("Iterations per run:"))
         iters_layout.addWidget(self.iters_spinbox)
+        
+        iters_hint = QLabel("Higher = better quality, but slower (5 is good default)")
+        iters_hint.setObjectName("hintLabel")
+        iters_hint.setWordWrap(True)
+        iters_layout.addWidget(iters_hint)
         
         iters_group.setLayout(iters_layout)
         seg_layout.addWidget(iters_group)
@@ -465,16 +852,16 @@ class MainWindow(QMainWindow):
         # Overlay opacity
         opacity_group = QGroupBox("Overlay Opacity")
         opacity_layout = QVBoxLayout()
+        opacity_layout.setSpacing(8)
+        
+        self.opacity_label = QLabel("Opacity: 50%")
+        opacity_layout.addWidget(self.opacity_label)
         
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setMinimum(0)
         self.opacity_slider.setMaximum(100)
         self.opacity_slider.setValue(50)
         self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
-        
-        self.opacity_label = QLabel("50%")
-        
-        opacity_layout.addWidget(self.opacity_label)
         opacity_layout.addWidget(self.opacity_slider)
         
         opacity_group.setLayout(opacity_layout)
@@ -483,14 +870,15 @@ class MainWindow(QMainWindow):
         # Advanced options
         advanced_group = QGroupBox("Advanced Options")
         advanced_layout = QVBoxLayout()
+        advanced_layout.setSpacing(8)
         
         self.seed_refine_checkbox = QCheckBox("Apply Seed Refinement")
         self.seed_refine_checkbox.setChecked(True)
-        self.seed_refine_checkbox.setToolTip("Apply MGC geodesic seed expansion")
+        self.seed_refine_checkbox.setToolTip("Apply MGC geodesic seed expansion (recommended)")
         
         self.post_smooth_checkbox = QCheckBox("Apply Post-Smoothing")
         self.post_smooth_checkbox.setChecked(True)
-        self.post_smooth_checkbox.setToolTip("Apply MGC guided filter smoothing")
+        self.post_smooth_checkbox.setToolTip("Apply MGC guided filter smoothing (recommended)")
         
         advanced_layout.addWidget(self.seed_refine_checkbox)
         advanced_layout.addWidget(self.post_smooth_checkbox)
@@ -727,7 +1115,12 @@ class MainWindow(QMainWindow):
     
     def _save_mask(self):
         """Save segmentation mask."""
-        if self.session is None or not np.any(self.session.final_mask > 0):
+        # Get the active session based on current mode
+        mode = self.mode_combo.currentData()
+        active_session = self.ensemble_session if mode == "ensemble" else self.session
+        
+        # Check if we have a valid mask to save
+        if active_session is None or not np.any(active_session.final_mask > 0):
             QMessageBox.warning(self, "No Segmentation", "No segmentation to save.")
             return
         
@@ -743,10 +1136,10 @@ class MainWindow(QMainWindow):
         
         try:
             if file_path.endswith(".npy"):
-                np.save(file_path, self.session.final_mask)
+                np.save(file_path, active_session.final_mask)
             else:
                 # Save as indexed PNG with VOC palette
-                img = Image.fromarray(self.session.final_mask, mode="P")
+                img = Image.fromarray(active_session.final_mask, mode="P")
                 img.putpalette(voc_palette().ravel().tolist())
                 img.save(file_path)
             
@@ -866,7 +1259,7 @@ class MainWindow(QMainWindow):
     def _on_brush_size_changed(self, value: int):
         """Handle brush size change."""
         self.canvas.set_brush_size(value)
-        self.brush_label.setText(f"Size: {value}")
+        self.brush_label.setText(f"Size: {value} px")
     
     def _on_eraser_toggled(self, checked: bool):
         """Handle eraser toggle."""
@@ -877,7 +1270,7 @@ class MainWindow(QMainWindow):
         """Handle opacity change."""
         opacity = value / 100.0
         self.canvas.set_segmentation_opacity(opacity)
-        self.opacity_label.setText(f"{value}%")
+        self.opacity_label.setText(f"Opacity: {value}%")
     
     def _on_scribbles_changed(self):
         """Handle scribbles change."""

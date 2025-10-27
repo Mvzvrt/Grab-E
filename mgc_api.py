@@ -124,6 +124,7 @@ def mgc_refine_seeds(img_rgb_u8: np.ndarray,
 def mgc_post_smooth_mask(img_rgb_u8: np.ndarray,
                         bin_mask01: np.ndarray,
                         guide_img: np.ndarray | None = None,
+                        return_intermediates: bool = False,
                         **kwargs) -> np.ndarray:
     """
     Post step that cleans and snaps the mask, then returns a {0,1} uint8 mask.
@@ -135,9 +136,14 @@ def mgc_post_smooth_mask(img_rgb_u8: np.ndarray,
 
     img_rgb_u8, image used for edge map in step 1.
     guide_img, optional guidance image for the guided snap in step 3, else uses img_rgb_u8.
+    return_intermediates, when True returns (final_mask, intermediates_dict) where intermediates_dict contains:
+        - 'superpixel_seg': superpixel segmentation map (if superpixel_snap_flag is True)
+        - 'guided_soft': soft mask from guided filter (if snap_guided is True)
     """
     p = _DEFAULTS.copy()
     p.update(kwargs or {})
+    
+    intermediates = {}
 
     # Edge map for cleanup preservation
     key = _edge_key(img_rgb_u8)
@@ -162,22 +168,46 @@ def mgc_post_smooth_mask(img_rgb_u8: np.ndarray,
 
     # Optional SLIC majority snap
     if bool(p["superpixel_snap_flag"]):
-        y = mgc.superpixel_majority_snap(
-            img_rgb_u8, y,
-            region_size=int(p["sp_region_size"]),
-            compactness=float(p["sp_compactness"]),
-            tau=0.85
-        )
+        if return_intermediates:
+            y, seg = mgc.superpixel_majority_snap(
+                img_rgb_u8, y,
+                region_size=int(p["sp_region_size"]),
+                compactness=float(p["sp_compactness"]),
+                tau=0.85,
+                return_segmentation=True
+            )
+            intermediates['superpixel_seg'] = seg
+        else:
+            y = mgc.superpixel_majority_snap(
+                img_rgb_u8, y,
+                region_size=int(p["sp_region_size"]),
+                compactness=float(p["sp_compactness"]),
+                tau=0.85
+            )
 
     # Guided snapping to image edges
     if bool(p["snap_guided"]):
         guide = img_rgb_u8 if guide_img is None else guide_img
-        y = mgc.guided_snap(
-            guide, y,
-            r=int(p["snap_r"]),
-            eps=float(p["snap_eps"]),
-            thresh=float(p["snap_thresh"]),
-            return_soft=False
-        )
+        if return_intermediates:
+            y, soft = mgc.guided_snap(
+                guide, y,
+                r=int(p["snap_r"]),
+                eps=float(p["snap_eps"]),
+                thresh=float(p["snap_thresh"]),
+                return_soft=True
+            )
+            intermediates['guided_soft'] = soft
+        else:
+            y = mgc.guided_snap(
+                guide, y,
+                r=int(p["snap_r"]),
+                eps=float(p["snap_eps"]),
+                thresh=float(p["snap_thresh"]),
+                return_soft=False
+            )
 
-    return (y > 0).astype(np.uint8)
+    final = (y > 0).astype(np.uint8)
+    
+    if return_intermediates:
+        return final, intermediates
+    return final

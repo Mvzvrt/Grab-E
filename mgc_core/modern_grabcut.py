@@ -599,7 +599,7 @@ def cleanup_mask(binary: np.ndarray, edge_map: np.ndarray, min_area_frac: float 
     return out.astype(np.uint8, copy=False)
 
 def superpixel_majority_snap(img_rgb: np.ndarray, mask: np.ndarray, region_size: int=20,
-                             compactness: float=10.0, tau: float=0.85) -> np.ndarray:
+                             compactness: float=10.0, tau: float=0.85, return_segmentation: bool=False) -> np.ndarray:
     seg = slic(img_rgb, n_segments=max(100, (img_rgb.shape[0]*img_rgb.shape[1])//(region_size*region_size)),
                compactness=compactness, start_label=0, channel_axis=-1)
     out = mask.copy()
@@ -610,6 +610,8 @@ def superpixel_majority_snap(img_rgb: np.ndarray, mask: np.ndarray, region_size:
             out[sp] = 1
         elif fg_ratio <= (1.0 - tau):
             out[sp] = 0
+    if return_segmentation:
+        return out, seg
     return out
 
 def guided_snap(img_rgb: np.ndarray, mask: np.ndarray, r: int=4, eps: float=1e-3, thresh: float=0.5, return_soft: bool=False):
