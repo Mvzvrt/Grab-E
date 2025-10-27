@@ -1245,11 +1245,11 @@ class MainWindow(QMainWindow):
             )
             return
         
-    # Decide per-action defaults:
-    # - Segment (refine=False): seed refinement ON, post-smoothing ON
-    # - Refine  (refine=True):  seed refinement OFF, post-smoothing ON
-    apply_seed = not refine
-    apply_smooth = True
+        # Decide per-action defaults:
+        # - Segment (refine=False): seed refinement ON, post-smoothing ON
+        # - Refine  (refine=True):  seed refinement OFF, post-smoothing ON
+        apply_seed = not refine
+        apply_smooth = True
 
         # Update session parameters
         if mode == "single":

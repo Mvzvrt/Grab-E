@@ -24,6 +24,7 @@ Assumptions
 
 from __future__ import annotations
 from typing import Tuple
+import os
 
 import numpy as np
 import cv2 as cv
@@ -43,9 +44,12 @@ def _edge_key(img: np.ndarray) -> tuple:
 
 # ---------- Defaults mirroring modern_grabcut CLI ----------
 
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_STRUCTURED_MODEL_DEFAULT = os.path.join(_BASE_DIR, "mgc_core", "third_party", "sed", "model.yml.gz")
+
 _DEFAULTS = dict(
     edge_backend="structured",                 # "structured" or "composite"
-    structured_model="./mgc_core/third_party/sed/model.yml.gz",
+    structured_model=_STRUCTURED_MODEL_DEFAULT,
     texture_edges=False,
     geo_radius=12,
     edge_alpha=3.0,
@@ -84,6 +88,15 @@ def mgc_refine_seeds(img_rgb_u8: np.ndarray,
     """
     p = _DEFAULTS.copy()
     p.update(kwargs or {})
+    # Ensure structured model path is absolute and exists; otherwise fallback to composite edges
+    if p.get("edge_backend", "structured") == "structured":
+        mpath = p.get("structured_model", _STRUCTURED_MODEL_DEFAULT)
+        if not os.path.isabs(mpath):
+            mpath = os.path.join(_BASE_DIR, mpath)
+        if os.path.exists(mpath):
+            p["structured_model"] = mpath
+        else:
+            p["edge_backend"] = "composite"
 
     # Build edge map once per image, geometry is tied to RGB
     key = _edge_key(img_rgb_u8)
@@ -142,6 +155,15 @@ def mgc_post_smooth_mask(img_rgb_u8: np.ndarray,
     """
     p = _DEFAULTS.copy()
     p.update(kwargs or {})
+    # Ensure structured model path is absolute and exists; otherwise fallback to composite edges
+    if p.get("edge_backend", "structured") == "structured":
+        mpath = p.get("structured_model", _STRUCTURED_MODEL_DEFAULT)
+        if not os.path.isabs(mpath):
+            mpath = os.path.join(_BASE_DIR, mpath)
+        if os.path.exists(mpath):
+            p["structured_model"] = mpath
+        else:
+            p["edge_backend"] = "composite"
     
     intermediates = {}
 

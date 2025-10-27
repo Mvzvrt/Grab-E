@@ -298,7 +298,12 @@ class MultiClassSegmentationSession:
         
         # Apply post-smoothing if enabled
         if self.apply_post_smoothing:
-            bin_mask = mgc_post_smooth_mask(self.img_rgb, bin_mask, guide_img=self.img_rgb)
+            bin_mask = mgc_post_smooth_mask(
+                self.img_rgb,
+                bin_mask,
+                guide_img=self.img_rgb,
+                structured_model=_STRUCTURED_MODEL_PATH
+            )
         
         state.current_mask = bin_mask
         
