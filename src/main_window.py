@@ -20,7 +20,8 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QSpinBox, QSlider, QComboBox, QFileDialog, QMessageBox,
     QToolBar, QStatusBar, QDockWidget, QGroupBox, QCheckBox,
-    QProgressDialog, QSplitter, QColorDialog, QInputDialog, QSizePolicy, QScrollArea
+    QProgressDialog, QSplitter, QColorDialog, QInputDialog, QSizePolicy, QScrollArea,
+    QDialog, QTableWidget, QTableWidgetItem
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize
 from PySide6.QtGui import QAction, QKeySequence, QIcon, QColor
@@ -46,15 +47,26 @@ class SegmentationWorker(QThread):
     finished = Signal(np.ndarray)  # Emits final mask
     error = Signal(str)  # Emits error message
     progress = Signal(int, str)  # Emits (percentage, status message)
+    metrics = Signal(dict)  # Emits metrics dict with time, peak_ram_mb, image_size, mode
     
-    def __init__(self, session: MultiClassSegmentationSession, force_reinit: bool = False, mode: str = "single"):
+    def __init__(self, session: MultiClassSegmentationSession, force_reinit: bool = False, mode: str = "single", collect_metrics: bool = False):
         super().__init__()
         self.session = session
         self.force_reinit = force_reinit
         self.mode = mode
+        self.collect_metrics = collect_metrics
     
     def run(self):
         """Run segmentation in background."""
+        import time
+        import tracemalloc
+        
+        start_time = time.perf_counter()
+        peak_ram_mb = 0
+        
+        if self.collect_metrics:
+            tracemalloc.start()
+        
         try:
             classes = self.session.get_classes()
             if not classes:
@@ -76,9 +88,30 @@ class SegmentationWorker(QThread):
             final_mask = self.session.segment_all_classes(force_reinit=False)
             
             self.progress.emit(100, "Complete!")
+            
+            # Collect metrics
+            if self.collect_metrics:
+                current, peak = tracemalloc.get_traced_memory()
+                peak_ram_mb = peak / (1024 * 1024)
+                tracemalloc.stop()
+                
+                elapsed_time = time.perf_counter() - start_time
+                
+                metrics_data = {
+                    "time_sec": elapsed_time,
+                    "peak_ram_mb": peak_ram_mb,
+                    "image_size": f"{self.session.W}x{self.session.H}",
+                    "mode": "single",
+                    "color_space": self.session.color_space,
+                    "action": "refine" if not self.force_reinit else "segment"
+                }
+                self.metrics.emit(metrics_data)
+            
             self.finished.emit(final_mask)
             
         except Exception as e:
+            if self.collect_metrics and tracemalloc.is_tracing():
+                tracemalloc.stop()
             self.error.emit(f"Segmentation failed: {str(e)}")
 
 
@@ -88,18 +121,30 @@ class EnsembleSegmentationWorker(QThread):
     finished = Signal(np.ndarray)  # Emits final mask
     error = Signal(str)  # Emits error message
     progress = Signal(int, str)  # Emits (percentage, status message)
+    metrics = Signal(dict)  # Emits metrics dict with time, peak_ram_mb, image_size, mode
     
     def __init__(
         self,
         ensemble_session: EnsembleSegmentationSession,
-        force_reinit: bool = False
+        force_reinit: bool = False,
+        collect_metrics: bool = False
     ):
         super().__init__()
         self.ensemble_session = ensemble_session
         self.force_reinit = force_reinit
+        self.collect_metrics = collect_metrics
     
     def run(self):
         """Run ensemble segmentation in background."""
+        import time
+        import tracemalloc
+        
+        start_time = time.perf_counter()
+        peak_ram_mb = 0
+        
+        if self.collect_metrics:
+            tracemalloc.start()
+        
         try:
             classes = self.ensemble_session.get_classes()
             if not classes:
@@ -118,9 +163,30 @@ class EnsembleSegmentationWorker(QThread):
             final_mask = self.ensemble_session.segment_all_classes(force_reinit=self.force_reinit)
             
             self.progress.emit(100, "Complete!")
+            
+            # Collect metrics
+            if self.collect_metrics:
+                current, peak = tracemalloc.get_traced_memory()
+                peak_ram_mb = peak / (1024 * 1024)
+                tracemalloc.stop()
+                
+                elapsed_time = time.perf_counter() - start_time
+                
+                metrics_data = {
+                    "time_sec": elapsed_time,
+                    "peak_ram_mb": peak_ram_mb,
+                    "image_size": f"{self.ensemble_session.W}x{self.ensemble_session.H}",
+                    "mode": "ensemble",
+                    "color_spaces": ", ".join(color_spaces),
+                    "action": "refine" if not self.force_reinit else "segment"
+                }
+                self.metrics.emit(metrics_data)
+            
             self.finished.emit(final_mask)
             
         except Exception as e:
+            if self.collect_metrics and tracemalloc.is_tracing():
+                tracemalloc.stop()
             self.error.emit(f"Ensemble segmentation failed: {str(e)}")
 
 
@@ -137,6 +203,10 @@ class MainWindow(QMainWindow):
         self.ensemble_session: Optional[EnsembleSegmentationSession] = None
         self.current_image_path: Optional[Path] = None
         self.segmentation_worker: Optional[SegmentationWorker] = None
+        
+        # Metrics tracking
+        self.metrics_enabled = False
+        self.metrics_history = []  # List of metrics dicts
         
         # Class management: maps class_id -> {"name": str, "color": QColor}
         self.classes = {}
@@ -955,6 +1025,20 @@ class MainWindow(QMainWindow):
         clear_scribbles_btn.setToolTip("Remove all drawn scribbles")
         draw_tools_layout.addWidget(clear_scribbles_btn)
         
+        # Metrics mode toggle
+        self.metrics_checkbox = QCheckBox("Enable Metrics Mode")
+        self.metrics_checkbox.setChecked(False)
+        self.metrics_checkbox.toggled.connect(self._on_metrics_toggled)
+        self.metrics_checkbox.setToolTip("Track processing time and peak RAM for each segment/refine operation")
+        draw_tools_layout.addWidget(self.metrics_checkbox)
+        
+        # View metrics button
+        self.view_metrics_btn = QPushButton("View Metrics")
+        self.view_metrics_btn.clicked.connect(self._show_metrics_dialog)
+        self.view_metrics_btn.setEnabled(False)
+        self.view_metrics_btn.setToolTip("View collected performance metrics")
+        draw_tools_layout.addWidget(self.view_metrics_btn)
+        
         draw_tools_group.setLayout(draw_tools_layout)
         draw_layout.addWidget(draw_tools_group)
         
@@ -1281,12 +1365,12 @@ class MainWindow(QMainWindow):
         if mode == "single":
             force_reinit = not refine
             self.segmentation_worker = SegmentationWorker(
-                self.session, force_reinit, mode="single"
+                self.session, force_reinit, mode="single", collect_metrics=self.metrics_enabled
             )
         else:  # ensemble
             force_reinit = not refine
             self.segmentation_worker = EnsembleSegmentationWorker(
-                self.ensemble_session, force_reinit
+                self.ensemble_session, force_reinit, collect_metrics=self.metrics_enabled
             )
         
         # Connect signals
@@ -1299,6 +1383,11 @@ class MainWindow(QMainWindow):
         self.segmentation_worker.error.connect(
             lambda msg: self._on_segmentation_error(msg, progress)
         )
+        
+        # Connect metrics signal if enabled
+        if self.metrics_enabled:
+            self.segmentation_worker.metrics.connect(self._on_metrics_collected)
+        
         progress.canceled.connect(self.segmentation_worker.terminate)
         
         # Start segmentation
@@ -1489,6 +1578,155 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.Yes:
             self.canvas.clear_scribbles()
             self.status_bar.showMessage("Scribbles cleared")
+    
+    def _on_metrics_toggled(self, checked: bool):
+        """Handle metrics mode toggle."""
+        self.metrics_enabled = checked
+        if checked:
+            self.status_bar.showMessage("Metrics mode enabled - will track time and RAM for each operation")
+        else:
+            self.status_bar.showMessage("Metrics mode disabled")
+    
+    def _on_metrics_collected(self, metrics_data: dict):
+        """Handle metrics collection from worker thread."""
+        self.metrics_history.append(metrics_data)
+        self.view_metrics_btn.setEnabled(True)
+        
+        # Show brief notification
+        time_str = f"{metrics_data['time_sec']:.2f}s"
+        ram_str = f"{metrics_data['peak_ram_mb']:.1f} MB"
+        self.status_bar.showMessage(
+            f"Metrics: {time_str}, Peak RAM: {ram_str} | {metrics_data['image_size']} | {metrics_data['action']}", 
+            5000
+        )
+    
+    def _show_metrics_dialog(self):
+        """Show dialog with metrics history."""
+        if not self.metrics_history:
+            QMessageBox.information(self, "No Metrics", "No metrics data collected yet.")
+            return
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Performance Metrics")
+        dialog.setMinimumWidth(700)
+        dialog.setMinimumHeight(400)
+        
+        layout = QVBoxLayout()
+        
+        # Info label
+        info_label = QLabel(f"Collected {len(self.metrics_history)} metric(s)")
+        info_label.setStyleSheet("font-weight: bold; padding: 8px;")
+        layout.addWidget(info_label)
+        
+        # Table widget
+        table = QTableWidget()
+        table.setColumnCount(6)
+        table.setHorizontalHeaderLabels(["#", "Action", "Mode", "Image Size", "Time (s)", "Peak RAM (MB)"])
+        table.setRowCount(len(self.metrics_history))
+        
+        for idx, m in enumerate(self.metrics_history):
+            table.setItem(idx, 0, QTableWidgetItem(str(idx + 1)))
+            table.setItem(idx, 1, QTableWidgetItem(m.get("action", "N/A")))
+            
+            mode_str = m.get("mode", "N/A")
+            if mode_str == "single":
+                mode_str = f"Single ({m.get('color_space', 'N/A')})"
+            elif mode_str == "ensemble":
+                mode_str = f"Ensemble ({m.get('color_spaces', 'N/A')})"
+            table.setItem(idx, 2, QTableWidgetItem(mode_str))
+            
+            table.setItem(idx, 3, QTableWidgetItem(m.get("image_size", "N/A")))
+            table.setItem(idx, 4, QTableWidgetItem(f"{m.get('time_sec', 0):.3f}"))
+            table.setItem(idx, 5, QTableWidgetItem(f"{m.get('peak_ram_mb', 0):.2f}"))
+        
+        table.resizeColumnsToContents()
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        layout.addWidget(table)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        export_btn = QPushButton("Export to CSV")
+        export_btn.clicked.connect(lambda: self._export_metrics_csv(dialog))
+        button_layout.addWidget(export_btn)
+        
+        clear_btn = QPushButton("Clear Metrics")
+        clear_btn.setObjectName("dangerButton")
+        clear_btn.clicked.connect(lambda: self._clear_metrics(dialog))
+        button_layout.addWidget(clear_btn)
+        
+        button_layout.addStretch()
+        
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        button_layout.addWidget(close_btn)
+        
+        layout.addLayout(button_layout)
+        
+        dialog.setLayout(layout)
+        dialog.exec()
+    
+    def _export_metrics_csv(self, parent_dialog: QDialog):
+        """Export metrics to CSV file."""
+        if not self.metrics_history:
+            return
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            parent_dialog,
+            "Export Metrics to CSV",
+            "metrics.csv",
+            "CSV Files (*.csv);;All Files (*)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            import csv
+            with open(file_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                # Header
+                writer.writerow(["Index", "Action", "Mode", "Color Space(s)", "Image Size", "Time (s)", "Peak RAM (MB)"])
+                
+                # Data
+                for idx, m in enumerate(self.metrics_history):
+                    mode_str = m.get("mode", "N/A")
+                    cs_str = ""
+                    if mode_str == "single":
+                        cs_str = m.get("color_space", "N/A")
+                    elif mode_str == "ensemble":
+                        cs_str = m.get("color_spaces", "N/A")
+                    
+                    writer.writerow([
+                        idx + 1,
+                        m.get("action", "N/A"),
+                        mode_str,
+                        cs_str,
+                        m.get("image_size", "N/A"),
+                        f"{m.get('time_sec', 0):.3f}",
+                        f"{m.get('peak_ram_mb', 0):.2f}"
+                    ])
+            
+            QMessageBox.information(parent_dialog, "Export Complete", f"Metrics exported to:\n{file_path}")
+        except Exception as e:
+            QMessageBox.critical(parent_dialog, "Export Failed", f"Failed to export metrics:\n{str(e)}")
+    
+    def _clear_metrics(self, parent_dialog: QDialog):
+        """Clear metrics history."""
+        reply = QMessageBox.question(
+            parent_dialog,
+            "Clear Metrics",
+            "Clear all collected metrics?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.metrics_history.clear()
+            self.view_metrics_btn.setEnabled(False)
+            QMessageBox.information(parent_dialog, "Cleared", "Metrics history cleared.")
+            parent_dialog.accept()
     
     def _initialize_default_classes(self):
         """Initialize with just the background class."""
