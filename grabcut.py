@@ -3,7 +3,7 @@
 
 """GrabCut batch CLI for one vs rest segmentation with optional ensemble over three color spaces.
 This version moves majority voting from per-class binary masks to voting over final indexed masks.
-Indexed masks follow VOC style, 0 background, 1..20 foreground classes mapped to 1..20.
+Indexed masks now follow app/GT convention: 0 background, foreground labels equal class IDs (2..20 -> 2..20).
 Minimal flags: --images_dir, --anns_dir, --output_dir. To enable ensemble, add --enable_majority_vote.
 For three-way label ties, use --ensemble_label_tie_strategy [first, second, third]."""
 
@@ -211,7 +211,7 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
     For each present class c > 1:
       FG seeds = anns == c
       BG seeds = anns == 1 or anns > 1 and not equal to c
-    Combine binary masks into a single VOC index map where:
+    Combine binary masks into a single index map where:
       output 0 = background, output 1..20 = foreground classes, map c -> c - 1.
 
     New options:
@@ -256,7 +256,7 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
     for c in classes:
         seeds_fg = (anns == c)
         seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
-        # seeds_fg, seeds_bg = mgc_refine_seeds(img_rgb_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, conf_img=img_feats_u8)
+        seeds_fg, seeds_bg = mgc_refine_seeds(img_rgb_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, conf_img=img_feats_u8)
 
         if collect_models:
             y, bgm, fgm = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters, return_models=True)  # type: ignore
@@ -445,10 +445,10 @@ def save_binary_mask_indexed(base: str,
                              out_dir: Path,
                              suffix: str = "binary") -> str:
     """
-    Save a binary mask as an indexed PNG with VOC palette.
-    The binary mask (0 or 1) is converted to indexed format where:
-      - 0 stays as 0 (background)
-      - 1 is mapped to the class label (class_id - 1) following VOC convention
+        Save a binary mask as an indexed PNG.
+        The binary mask (0 or 1) is converted to indexed format where:
+            - 0 stays as 0 (background)
+            - 1 is mapped to the class label equal to `class_id` (app/GT convention)
     
     File name pattern: {base}__{color_space}__c{class_id:02d}__{suffix}.png
     suffix: "binary" for post-refinement, "pre_refine" for pre-refinement, etc.
@@ -456,8 +456,8 @@ def save_binary_mask_indexed(base: str,
     """
     _ensure_dir(out_dir)
     
-    # Convert binary mask to indexed: 0 -> 0, 1 -> (class_id - 1)
-    indexed = np.where(binary_mask > 0, class_id - 1, 0).astype(np.uint8)
+    # Convert binary mask to indexed: 0 -> 0, 1 -> class_id
+    indexed = np.where(binary_mask > 0, class_id, 0).astype(np.uint8)
     
     fname = f"{base}__{color_space}__c{class_id:02d}__{suffix}.png"
     fpath = out_dir / fname

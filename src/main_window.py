@@ -778,6 +778,11 @@ class MainWindow(QMainWindow):
         save_mask_action.setShortcut(QKeySequence.Save)
         save_mask_action.triggered.connect(self._save_mask)
         file_menu.addAction(save_mask_action)
+
+        save_scribbles_action = QAction("Save &Scribbles...", self)
+        save_scribbles_action.setShortcut("Ctrl+Shift+S")
+        save_scribbles_action.triggered.connect(self._save_scribbles)
+        file_menu.addAction(save_scribbles_action)
         
         save_session_action = QAction("Save &Session...", self)
         save_session_action.triggered.connect(self._save_session)
@@ -889,6 +894,12 @@ class MainWindow(QMainWindow):
         save_btn.clicked.connect(self._save_mask)
         save_btn.setToolTip("Step 9: Export segmentation mask")
         toolbar.addWidget(save_btn)
+
+        # Save scribbles before segmentation/refine
+        save_scribbles_btn = QPushButton("Save Scribbles")
+        save_scribbles_btn.clicked.connect(self._save_scribbles)
+        save_scribbles_btn.setToolTip("Save current scribbles to PNG/NPY before processing")
+        toolbar.addWidget(save_scribbles_btn)
         
         toolbar.addSeparator()
         
@@ -1488,28 +1499,73 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save mask:\n{str(e)}")
+
+    def _save_scribbles(self):
+        """Save current scribbles (annotation map) to file before segmentation/refine."""
+        if self.image_array is None:
+            QMessageBox.warning(self, "No Image", "Please open an image first.")
+            return
+
+        annotations = self.canvas.get_annotation_map()
+        if annotations.size == 0 or not np.any(annotations > 0):
+            QMessageBox.warning(self, "No Scribbles", "No scribbles to save.")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Scribbles",
+            "",
+            "PNG Image (*.png);;NumPy Array (*.npy);;All Files (*)"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            if file_path.endswith(".npy"):
+                np.save(file_path, annotations.astype(np.int32))
+            else:
+                # Save as indexed PNG: indices correspond directly to class_id values in annotations
+                # Build palette where index i uses the configured color for class_id i
+                img = Image.fromarray(annotations.astype(np.uint8), mode="P")
+
+                # Construct palette of 256 entries based on user's class colors
+                # Index 0 (background pixels with no scribbles) = white for visibility
+                palette = np.zeros(768, dtype=np.uint8)
+                palette[0:3] = [255, 255, 255]  # Index 0 = white background
+                
+                for class_id, info in self.classes.items():
+                    if 0 <= class_id < 256:
+                        color = info["color"]
+                        idx = class_id * 3
+                        palette[idx] = color.red()
+                        palette[idx + 1] = color.green()
+                        palette[idx + 2] = color.blue()
+                img.putpalette(palette.tolist())
+                img.save(file_path)
+
+            self.status_bar.showMessage(f"Saved scribbles: {Path(file_path).name}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save scribbles:\n{str(e)}")
     
     def _build_custom_palette(self):
         """Build a 256-color palette based on user's chosen class colors.
         
-        Note: Segmentation mask values are 0, 1, 2... which correspond to 
-        class_ids 1, 2, 3... (offset by 1)
+        Note: Segmentation mask values now equal class IDs directly (no offset).
         """
         # Create a palette array (256 colors x 3 RGB values = 768 values)
         palette = np.zeros(768, dtype=np.uint8)
         
         # Set colors for each class based on user's choices
-        # Mask value i corresponds to class_id (i+1)
+        # Mask value equals class_id directly
         for class_id, class_info in self.classes.items():
             if class_id < 256:  # Palette can only hold 256 colors
                 color = class_info["color"]
-                # Map class_id to mask_value: mask_value = class_id - 1
-                mask_value = class_id - 1
-                if mask_value >= 0:  # Ensure valid index
-                    idx = mask_value * 3
-                    palette[idx] = color.red()
-                    palette[idx + 1] = color.green()
-                    palette[idx + 2] = color.blue()
+                # Use class_id directly as palette index
+                idx = class_id * 3
+                palette[idx] = color.red()
+                palette[idx + 1] = color.green()
+                palette[idx + 2] = color.blue()
         
         return palette.tolist()
     
@@ -1809,15 +1865,15 @@ class MainWindow(QMainWindow):
     def _add_new_class(self):
         """Add a new foreground class."""
         # Limit to reasonable number
-        if self.next_class_id > 50:
+        if len(self.classes) >= 50:
             QMessageBox.warning(self, "Warning", "Maximum number of classes (50) reached.")
             return
         
-        # Ask for class name
+        # Step 1: Ask for class name
         name, ok = QInputDialog.getText(
             self, 
-            "Add New Class", 
-            f"Enter class name (will be assigned label {self.next_class_id - 1}):",
+            "Add New Class - Step 1/3", 
+            "Enter class name:",
             text=f"Object_{self.next_class_id - 1}"
         )
         
@@ -1826,7 +1882,50 @@ class MainWindow(QMainWindow):
         
         name = name.strip()
         
-        # Generate a nice default color (cycling through distinct colors)
+        # Step 2: Ask for class label index
+        used_ids = set(self.classes.keys())
+        available_ids = [i for i in range(2, 51) if i not in used_ids]
+        
+        if not available_ids:
+            QMessageBox.warning(self, "Warning", "All class IDs (2-50) are in use.")
+            return
+        
+        # Show used IDs info
+        used_ids_str = ", ".join(map(str, sorted(used_ids))) if used_ids else "None"
+        suggested_id = self.next_class_id if self.next_class_id <= 50 else available_ids[0]
+        
+        class_id, ok = QInputDialog.getInt(
+            self,
+            "Add New Class - Step 2/3",
+            f"Enter class label index (2-50):\n\nUsed IDs: {used_ids_str}\n\nNote: Class ID 2 = Label 1, ID 3 = Label 2, etc.",
+            suggested_id,  # value
+            2,             # minValue
+            50,            # maxValue
+            1              # step
+        )
+        
+        if not ok:
+            return
+        
+        # Check if ID is already used
+        if class_id in self.classes:
+            reply = QMessageBox.question(
+                self,
+                "ID In Use",
+                f"Class ID {class_id} (label {class_id - 1}) is already used by '{self.classes[class_id]['name']}'.\n\n"
+                "Do you want to replace it?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                return
+            # Remove the old class from combo
+            for i in range(self.class_combo.count()):
+                if self.class_combo.itemData(i) == class_id:
+                    self.class_combo.removeItem(i)
+                    break
+        
+        # Step 3: Pick a color
         color_palette = [
             QColor(0, 128, 0),      # Green
             QColor(128, 128, 0),    # Olive
@@ -1837,24 +1936,27 @@ class MainWindow(QMainWindow):
             QColor(192, 128, 0),    # Orange
             QColor(64, 0, 128),     # Indigo
         ]
-        default_color = color_palette[(self.next_class_id - 2) % len(color_palette)]
+        default_color = color_palette[(class_id - 2) % len(color_palette)]
         
-        # Pick a color
-        color = QColorDialog.getColor(default_color, self, f"Choose color for '{name}'")
+        color = QColorDialog.getColor(default_color, self, f"Add New Class - Step 3/3: Choose color for '{name}'")
         
         if not color.isValid():
             return
         
         # Add to class registry
-        class_id = self.next_class_id
         self.classes[class_id] = {
             "name": name,
             "color": color
         }
-        self.next_class_id += 1
         
-        # Add to combo box
-        display_name = f"{name} (label {class_id - 1})"
+        # Update next_class_id to be next available
+        if self.classes:
+            self.next_class_id = max(self.classes.keys()) + 1
+        else:
+            self.next_class_id = 2
+        
+        # Add to combo box (clarify mapping: class ID is used in annotations; output label = class_id - 1)
+        display_name = f"{name} (class {class_id}, output label {class_id - 1})"
         self.class_combo.addItem(display_name, class_id)
         self.canvas.add_class_color(class_id, color)
         
@@ -1900,8 +2002,8 @@ class MainWindow(QMainWindow):
         self.classes[class_id]["name"] = name
         self.classes[class_id]["color"] = color
         
-        # Update combo box
-        display_name = f"{name} (label {class_id - 1})"
+        # Update combo box (clarify mapping)
+        display_name = f"{name} (class {class_id}, output label {class_id - 1})"
         self.class_combo.setItemText(current_index, display_name)
         
         # Update canvas color

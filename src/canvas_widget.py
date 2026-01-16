@@ -415,19 +415,19 @@ class CanvasWidget(QWidget):
         # Create colored overlay
         overlay = np.zeros((h, w, 4), dtype=np.uint8)
         
-        # Segmentation mask values are output labels: 0, 1, 2, 3...
-        # These need to map back to class IDs: 1, 2, 3, 4...
-        # Formula: class_id = mask_value + 1
+        # Segmentation mask values now equal class IDs directly (no offset)
+        # mask_value 1 -> class_id 1 (background)
+        # mask_value 2 -> class_id 2 (first foreground)
+        # mask_value 18 -> class_id 18 (eighteenth foreground)
+        # etc.
         unique_values = np.unique(self.segmentation_mask)
         for mask_value in unique_values:
+            if mask_value == 0:  # Skip zero (no segmentation)
+                continue
             mask = (self.segmentation_mask == mask_value)
             if np.any(mask):
-                # Map mask label to class ID:
-                # mask_value 0 -> class_id 1 (background)
-                # mask_value 1 -> class_id 2 (first foreground)
-                # mask_value 2 -> class_id 3 (second foreground)
-                # etc.
-                class_id = int(mask_value) + 1
+                # Mask value IS the class ID directly
+                class_id = int(mask_value)
                 color = self.get_class_color(class_id)
                 overlay[mask] = [color.red(), color.green(), color.blue(), 
                                 int(255 * self.segmentation_opacity)]
