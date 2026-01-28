@@ -771,8 +771,8 @@ def parse_args(argv=None):
     # majority voting ensemble controls
     ap.add_argument("--enable_majority_vote", action="store_true",
                     help="Enable majority voting ensemble across a trio of color spaces for binary masks prior to class assignment.")
-    ap.add_argument("--ensemble_trio", type=str, default="jzazbz,jzczhz,rgb",
-                    help="Comma separated trio for majority voting, default ruderman_lab,c16_scd,cielab.")
+    ap.add_argument("--ensemble_trio", type=str, default="ruderman_lab,oklab,jzczhz",
+                    help="Comma separated trio for majority voting, default ruderman_lab,oklab,jzczhz.")
     ap.add_argument("--ensemble_trio_parallel", type=str, default="auto", choices=["auto", "on", "off"],
                     help="Intra image trio parallelization. auto, parallelize trio when not running batch parallel, off in batch. on, always parallelize. off, never parallelize.")
     ap.add_argument("--ensemble_trio_workers", type=int, default=0,
