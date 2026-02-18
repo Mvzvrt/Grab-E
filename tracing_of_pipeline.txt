@@ -1,0 +1,54 @@
+Plan: Trace GUI → Segmentation Pipeline
+TL;DR — Entry point after user scribbles is src/canvas_widget.py::mouseReleaseEvent (emits scribbles_changed); segmentation is started by src/main_window.py::_run_segmentation, which drives MultiClassSegmentationSession and/or EnsembleSegmentationSession (calls seed refinement in mgc_api.mgc_refine_seeds, color-space conversion in color_space.convert_color_space, GrabCut in opencv_grabcut_refine, per-class assembly in segment_all_classes, ensemble majority voting in majority_vote_indexed), and final display is src/canvas_widget.py::set_segmentation_mask (painted in paintEvent). ✅
+
+Steps — exact flow (entry → segmentation → display)
+User finishes drawing
+src/canvas_widget.py::mouseReleaseEvent — builds ScribbleLayer, appends to self.scribbles, emits scribbles_changed.
+UI reacts / user triggers segmentation
+src/main_window.py::_run_segmentation — reads canvas.get_annotation_map(), updates session/ensemble_session, spawns SegmentationWorker.
+Worker performs per-class segmentation
+SegmentationWorker.run() → for each class call:
+MultiClassSegmentationSession.segment_class
+Build seeds (fg/bg) from annotations
+Optional seed refinement: mgc_api.mgc_refine_seeds
+Color-space features already prepared via convert_color_space
+Run GrabCut: opencv_grabcut_refine (uses OpenCV)
+Optional post-smooth: mgc_api.mgc_post_smooth_mask
+Per-class results → multi-class mask
+MultiClassSegmentationSession.segment_all_classes → resolve overlaps (_combine_masks)
+Ensemble (if selected)
+EnsembleSegmentationSession runs multiple color-spaces → majority_vote_indexed for final label selection
+Return & display
+Worker emits final mask → main_window.py::_on_segmentation_complete → canvas.set_segmentation_mask
+CanvasWidget.paintEvent draws overlay via _draw_segmentation_overlay
+Key files & symbols:
+
+UI / canvas: canvas_widget.py — mouseReleaseEvent, get_annotation_map, set_segmentation_mask, paintEvent
+Orchestration: main_window.py — _run_segmentation, SegmentationWorker, _on_segmentation_complete
+Core API: grabcut_refine_api.py — MultiClassSegmentationSession, EnsembleSegmentationSession, opencv_grabcut_refine, majority_vote_indexed
+Color spaces: src/color_space.py::convert_color_space
+Seed-refine / post-smooth: mgc_api.py::mgc_refine_seeds, mgc_post_smooth_mask (uses mgc_core)
+Native processing: OpenCV cv.grabCut (used inside opencv_grabcut_refine)
+Verification — how to test this trace (manual + automated)
+Manual end-to-end:
+Open app, draw bg/fg scribbles, click Segment.
+Confirm SegmentationWorker runs and canvas overlay updates.
+Toggle ensemble/color-space options, re-run, verify majority-vote changes.
+Automated/unit targets:
+Unit test MultiClassSegmentationSession.segment_class using synthetic image + seed map
+Unit test segment_all_classes overlap resolution (tie modes)
+Unit test EnsembleSegmentationSession majority voting (majority_vote_indexed)
+Test CanvasWidget.get_annotation_map produces correct labeled map from sample ScribbleLayers
+Commands/examples:
+
+Run session unit tests (create) for grabcut_refine_api.py functions
+Run python src/verify_installation.py to ensure mgc_core is available
+Decisions / Issues found
+Bug: color-space-check in _run_segmentation compares a value to itself — prevents color-space updates at runtime. (File: main_window.py — fix recommended.)
+Dependency: mgc_core (C extension) must be built; otherwise seed-refinement/post-smoothing fail.
+Test coverage: add unit/integration tests for session classes and ensemble voting.
+Recommended next actions (pick one)
+Add unit tests for MultiClassSegmentationSession and majority_vote_indexed ✅
+Fix the color-space update bug in main_window.py (small patch) 🔧
+Verify mgc_core build and add CI check for it 💡
+If you want, I can draft the unit-test tasks or prepare the exact patch for the color-space bug — tell me which to do next.

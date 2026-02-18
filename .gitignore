@@ -24,3 +24,5 @@ ycbcr_bt709/
 run_indv_exp.ps1
 diagram/
 diagrasfm/
+dist/
+build/
