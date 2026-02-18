@@ -212,6 +212,8 @@ def edges_structured_forests(img_rgb: np.ndarray, model_path: Optional[str]) -> 
     Follows the standard OpenCV pipeline for SED: detectEdges -> computeOrientation -> edgesNms (if available) -> normalize to [0,1] in 
 
     Source: https://github.com/opencv/opencv_contrib/blob/4.x/modules/ximgproc/samples/edgeboxes_demo.py
+
+    Model Source: https://github.com/opencv/opencv_extra/tree/master/testdata/cv/ximgproc
     """
     bgr = cv.cvtColor(img_rgb, cv.COLOR_RGB2BGR).astype(np.float32) / 255.0
     sed = _get_sed(model_path)
