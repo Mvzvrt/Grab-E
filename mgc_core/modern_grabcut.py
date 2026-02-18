@@ -207,15 +207,26 @@ def edges_composite(img_rgb: np.ndarray, use_texture: bool=False) -> np.ndarray:
 def edges_structured_forests(img_rgb: np.ndarray, model_path: Optional[str]) -> np.ndarray:
     if not model_path or not Path(model_path).exists():
         raise FileNotFoundError("Structured Forests model file not found (set --structured_model).")
+
+    """ 
+    Follows the standard OpenCV pipeline for SED: detectEdges -> computeOrientation -> edgesNms (if available) -> normalize to [0,1] in 
+
+    Source: https://github.com/opencv/opencv_contrib/blob/4.x/modules/ximgproc/samples/edgeboxes_demo.py
+    """
     bgr = cv.cvtColor(img_rgb, cv.COLOR_RGB2BGR).astype(np.float32) / 255.0
     sed = _get_sed(model_path)
     E = sed.detectEdges(bgr).astype(np.float32)
     O = sed.computeOrientation(E).astype(np.float32)
     if hasattr(sed, "edgesNms"):
         E = sed.edgesNms(E, O)
-    m = float(E.max()) + 1e-6
+    
+    """
+    Performs a Global-Max Normalization
+    Find strongest edge in the entire image m and dividing every pixel by it
+    Transforms the edge map into a probability/cost map
+    """
+    m = float(E.max()) + 1e-6 ### 1e-6 to avoid divide-by-zero
     return (E / m).astype(np.float32, copy=False)
-
 
 
 def get_edge_map(img_rgb: np.ndarray,
