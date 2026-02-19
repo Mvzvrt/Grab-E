@@ -190,13 +190,21 @@ def _cam02_scd_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
 
 
 # ---------- CAM16 vectorized implementation ----------
+"""
+Matrix M16 (Equation 18): Derived to solve computational failures of CIECAM02.
+This matrix transforms XYZ tristimulus values into the CAM16 cone response space.
 
+Source: Li C, Li Z, Wang Z, et al. Comprehensive color solutions: CAM16, CAT16, and CAM16-UCS. Color Res Appl. 2017;00:1-12. https://doi.org/10.1002/col.22131
+"""
 _CAT16 = np.array([
     [ 0.401288,  0.650173, -0.051461],
     [-0.250268,  1.204414,  0.045854],
     [-0.002079,  0.048952,  0.953127],
 ], dtype=np.float32)
 
+"""
+Standard conversion matrix from sRGB to CIE XYZ (assuming D65 white point)
+"""
 _SRGB_TO_XYZ = np.array([
     [0.412456, 0.357576, 0.180438],
     [0.212673, 0.715152, 0.072175],
@@ -224,30 +232,65 @@ _ICTCP_LMS_TO_ICTCP_PQ = (1.0 / 4096.0) * np.array([
 ], dtype=np.float32)
 
 def _whitepoint_D65_XYZ() -> np.ndarray:
+    """
+    White point chromaticity: x = 0.3127, y = 0.3290 (D65)
+    
+    D65 mentioned Li et. al. (2017) as a viable reference illuminant for CAM16
+    Source: https://registry.color.org/rgb-registry/srgb
+    """
     x = 0.31270
     y = 0.32900
+
     Y = 100.0
     X = Y * x / y
     Z = Y * (1.0 - x - y) / y
     return np.array([X, Y, Z], dtype=np.float32)
 
-
 def _cam16_nonlinear_response(t: np.ndarray) -> np.ndarray:
     """
-    Apply CAM16 nonlinear response to t equals F_L times RGB divided by 100.
+    Implements the post-adaptation non-linear compression (Step 4, Eq. 8).
+    
+    This function transforms adapted cone responses (R'c, G'c, B'c) into 
+    compressed achromatic responses (R'a, G'a, B'a). It uses a Naka-Rushton 
+    equation to model the 'S-curve' saturation of human vision.
+    
+    Args:
+        t: The adapted cone signal scaled by F_L (Luminance level adaptation):
+           t = (F_L * RGB_c / 100)
     """
+    # Ensure 32-bit precision for fractional power calculation (0.42)
     t = t.astype(np.float32, copy=False)
+    
+    # Pre-allocate output array to match input dimensions (e.g., Image H x W x 3)
     out = np.empty_like(t, dtype=np.float32)
+    
+    # Identify positive signals (Standard physical light behavior)
     pos = t >= 0
+    
     if np.any(pos):
+        # Extract only positive values to avoid complex numbers in np.power
         tp = t[pos]
+        
+        # Apply the 0.42 power law (Eq. 8: 't' raised to 0.42)
         tp42 = np.power(tp, 0.42)
+        
+        # Calculate compressed response: 400 * (t^0.42 / (t^0.42 + 27.13)) + 0.1
+        # 400.0: Max neural response
+        # 27.13: Semi-saturation constant (where response is half-max)
+        # 0.1:   The 'pedestal' or noise floor offset
         out[pos] = 400.0 * tp42 / (tp42 + 27.13) + 0.1
+
+    # Handle negative signals (Numerical noise or out-of-gamut artifacts)
     neg = ~pos
     if np.any(neg):
+        # Treat negative values symmetrically: -f(|t|) + 0.1
+        # This prevents NaN results while maintaining mathematical continuity
         tn = -t[neg]
         tn42 = np.power(tn, 0.42)
+        
+        # Flipped curve for negative inputs
         out[neg] = -400.0 * tn42 / (tn42 + 27.13) + 0.1
+        
     return out
 
 
@@ -257,28 +300,46 @@ def _cam16_setup():
     Precompute context for CAM16 under dim surround, sRGB like viewing.
     """
     XYZ_w = _whitepoint_D65_XYZ()
+    """
+    Taken from Table A1 surround parameters
+    """
     F, c, Nc = 0.9, 0.59, 0.9
+
+    """
+    Ambient illuminance: 64 = E_w
+    Background illuminance factor: y_b = 20 taken from
+        White point luminance: 80 cd/m2 / 
+        Image background (proximal field): 16 cd/m
+    Source: https://registry.color.org/rgb-registry/srgb
+    """
     E_w = 64.0
     L_w = E_w / np.pi
     Y_b = 20.0
     L_A = (L_w * Y_b) / XYZ_w[1]
 
+    # Step 1.1: Calculate Degree of Adaptation (D) (Equation 4)
     RGB_w = _CAT16 @ XYZ_w
     D = F * (1.0 - (1.0 / 3.6) * np.exp(-(L_A + 42.0) / 92.0))
     D = np.clip(D, 0.0, 1.0)
     D_RGB = D * XYZ_w[1] / RGB_w + 1.0 - D
 
+    # Step 1.2: Calculate Luminance Adaptation Factor (FL) (Equation 5)
     k = 1.0 / (5.0 * L_A + 1.0)
     F_L = 0.2 * k**4 * 5.0 * L_A + 0.1 * (1.0 - k**4)**2 * (5.0 * L_A)**(1.0 / 3.0)
 
+    # Step 1.3: Calculate induction factors (Equations 6 & 7)
     n = Y_b / XYZ_w[1]
     z = 1.48 + n**0.5
     N_bb = 0.725 * (1.0 / n)**0.2
     N_cb = N_bb
 
+    # Step 1.4: Calculate adapted achromatic white (Aw)
     RGB_wc = D_RGB * RGB_w
-    t = (F_L * RGB_wc / 100.0)
+    # t here is a modularization of the expression the computation of RGB_aw
+    t = (F_L * RGB_wc / 100.0) 
     RGB_aw = _cam16_nonlinear_response(t)
+
+    # Note that @ here leads to a scalar value since first argument is 1x3 @ 3x1 = 1x1 or a scalar value
     A_w = (np.array([2.0, 1.0, 1.0 / 20.0], dtype=np.float32) @ RGB_aw - 0.305) * N_bb
 
     return {
@@ -287,13 +348,42 @@ def _cam16_setup():
         "D_RGB": D_RGB.astype(np.float32),
     }
 
-
 def _srgb_u8_to_linear01(img_rgb_u8: np.ndarray) -> np.ndarray:
+    """
+    Converts 8-bit sRGB values to linear-light [0, 1] floats.
+    
+    This function removes the sRGB transfer function (gamma encoding) to 
+    recover the linear Tristimulus values required for colorimetry.
+    
+    Source: 
+        IEC 61966-2-1:1999 (Multimedia systems and equipment - Colour 
+        measurement and management - Part 2-1: Colour management - 
+        Default RGB colour space - sRGB)
+        Link: https://webstore.iec.ch/publication/6169
+        (Technical Summary: https://www.color.org/sRGB.xalter)
+    
+    Constants:
+        - Threshold (0.04045): The point where the curve switches from linear 
+          to power law.
+        - Slope (12.92): The gradient of the linear segment near black.
+        - Exponent (2.4): The power used for the non-linear segment (often 
+          approximated as 2.2, but the standard specifies 2.4 with an offset).
+    """
+    # Normalize 0-255 integers to 0.0-1.0 floats
     x = img_rgb_u8.astype(np.float32, copy=False) / 255.0
+    
+    # Identify very dark pixels that fall within the linear slope (Toe)
     mask = x <= 0.04045
+    
+    # Pre-allocate output array
     y = np.empty_like(x, dtype=np.float32)
+    
+    # Linear segment: Applied to dark values to prevent infinite slope at zero
     y[mask]  = x[mask] / 12.92
+    
+    # Power-law segment: The main 'gamma' curve for midtones and highlights
     y[~mask] = ((x[~mask] + 0.055) / 1.055) ** 2.4
+    
     return y
 
 
@@ -302,6 +392,7 @@ def _cam16_forward_JMh_from_rgb(img_rgb_u8: np.ndarray) -> Tuple[int, int, np.nd
     Compute CAM16 J, M, h for an HxWx3 RGB uint8 image.
     Returns H, W, and flattened J, M, h vectors.
     """
+    ### Precompute components independent of the input sample
     ctx = _cam16_setup()
     F_L = ctx["F_L"]
     c = ctx["c"]
@@ -313,30 +404,61 @@ def _cam16_forward_JMh_from_rgb(img_rgb_u8: np.ndarray) -> Tuple[int, int, np.nd
     A_w = ctx["A_w"]
     D_RGB = ctx["D_RGB"]
 
+    """
+    Pre-step: Linearize sRGB and convert to XYZ Tristimulus Values
+    """
     rgb_lin = _srgb_u8_to_linear01(img_rgb_u8)
     H, W, _ = rgb_lin.shape
-    rgb_flat = rgb_lin.reshape(-1, 3)
+    rgb_flat = rgb_lin.reshape(-1, 3) # Flattens to (H*W, 3) for matrix multiplication
     XYZ = (rgb_flat @ _SRGB_TO_XYZ.T) * 100.0
 
+    """
+    Step 1: Calculate cone responses
+    Step 2: Complete the color adaptation of the illuminant in the corresponding cone response space
+    """
     RGB = (XYZ @ _CAT16.T) * D_RGB
 
+    """
+    Step 3: Calculate the postadaptation cone response
+    """
     t = (F_L * RGB / 100.0)
     RGB_a = _cam16_nonlinear_response(t)
 
+    """
+    Step 4: Calculate Redness - Greenness (a),Yellowness Blueness (b) components,
+        and hue angle (h)
+    """
     a = RGB_a @ np.array([1.0, -12.0 / 11.0, 1.0 / 11.0], dtype=np.float32)
     b = RGB_a @ np.array([1.0 / 9.0, 1.0 / 9.0, -2.0 / 9.0], dtype=np.float32)
-
     h = np.degrees(np.arctan2(b, a)).astype(np.float32)
     h[h < 0.0] += 360.0
     h_rad = np.radians(h)
 
+    """
+    Step 5: Calculate eccentricity factor (e)
+
+    Note: H and H_c are not computed since they are 
+        only necessary if you need to describe a color in words 
+        (e.g., "50% yellow, 50% red")
+    """
     e = 0.25 * (np.cos(h_rad + 2.0) + 3.8)
 
+    """
+    Step 6: Calculate achromatic response A
+    """
     A = (RGB_a @ np.array([2.0, 1.0, 1.0 / 20.0], dtype=np.float32) - 0.305) * N_bb
 
+    """
+    Step 7: Calculate the correlate of lightness J
+    """
     A_w_safe = float(np.maximum(A_w, 1e-6))
     J = 100.0 * np.power(np.maximum(A, 0.0) / A_w_safe, c * z)
 
+    # Step 8 is skipped as correlate of brightness Q is not needed for SCD and JMh features.
+
+    """
+    Step 9
+    """
     p1 = (50000.0 / 13.0) * Nc * N_cb * e * np.sqrt(a * a + b * b)
     p2 = RGB_a @ np.array([1.0, 1.0, 21.0 / 20.0], dtype=np.float32)
     p2 = np.where(np.abs(p2) < 1e-6, 1e-6, p2)
@@ -357,16 +479,53 @@ def _cam16_ucs_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
 
 
 def _cam16_scd_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
-    H, W, J, M, h = _cam16_forward_JMh_from_rgb(img_rgb_u8)
-    c1, c2 = 0.007, 0.0363
-    Jp = ((1.0 + 100.0 * c1) * J) / (1.0 + c1 * J)
-    Mp = np.log1p(c2 * M) / c2
-    h_rad = np.radians(h)
-    ap = Mp * np.cos(h_rad)
-    bp = Mp * np.sin(h_rad)
-    jab = np.stack([Jp, ap, bp], axis=1).reshape(H, W, 3).astype(np.float32)
-    return _scale_to_uint8_per_channel(jab)
+    """
+    Transforms sRGB image to the CAM16-SCD (Small Colour Difference) Uniform Colour Space.
+    
+    This space is optimized for predicting visual differences in the range of 
+    0-5 Delta E units. It applies non-linear compression to CAM16 Lightness (J) 
+    and Colourfulness (M) to achieve perceptual uniformity.
 
+    Source: 
+        Luo, M. R., Cui, G., & Li, C. (2006). "Uniform Colour Spaces Based on 
+        CIECAM02 Colour Appearance Model". Color Research & Application.
+        Equation (10) and Table II.
+
+    Returns:
+        An array of (J', a', b') coordinates scaled to uint8 for visualization 
+        or storage.
+    """
+    # 1. Obtain the standard CAM16 correlates (Step 1-10 of the CAM16 Forward Model)
+    H, W, J, M, h = _cam16_forward_JMh_from_rgb(img_rgb_u8)
+
+    # 2. Define UCS constants for the SCD (Small Colour Difference) version
+    # c1: Lightness scaling constant (Standardized across UCS/SCD/LCD)
+    # c2: Colourfulness compression constant (0.0363 is specific to SCD)
+    c1, c2 = 0.007, 0.0363
+
+    # 3. Calculate Modified Lightness (J')
+    # This hyperbolic function maps J [0, 100] to J' [0, 100]
+    # Reference Paper Eq: J' = ((1 + 100 * c1) * J) / (1 + c1 * J)
+    Jp = ((1.0 + 100.0 * c1) * J) / (1.0 + c1 * J)
+
+    # 4. Calculate Modified Colourfulness (M')
+    # Uses a logarithmic compression to match the human eye's saturation response.
+    # np.log1p(x) is used for numerical precision of ln(1 + x)
+    # Reference Paper Eq: M' = (1 / c2) * ln(1 + c2 * M)
+    Mp = np.log1p(c2 * M) / c2
+
+    # 5. Convert Polar coordinates (M', h) to Cartesian coordinates (a', b')
+    # This allows for Euclidean distance calculation: Delta_E = sqrt(dJ'^2 + da'^2 + db'^2)
+    h_rad = np.radians(h)
+    ap = Mp * np.cos(h_rad)  # Red-Green dimension
+    bp = Mp * np.sin(h_rad)  # Yellow-Blue dimension
+
+    # 6. Finalize output structure
+    # Stack into a single HxWx3 array and cast to float32 for downstream processing
+    jab = np.stack([Jp, ap, bp], axis=1).reshape(H, W, 3).astype(np.float32)
+    
+    # Scale back to 0-255 range for image representation
+    return _scale_to_uint8_per_channel(jab)
 
 # ---------- Added modern color spaces ----------
 
