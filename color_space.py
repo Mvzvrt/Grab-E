@@ -20,25 +20,71 @@ import cv2 as cv
 
 
 def _ensure_hwc3(arr: np.ndarray, H: int, W: int, where: str = "converter") -> np.ndarray:
+    """
+    Ensures the array conforms to the standard (H, W, 3) image topology.
+    
+    This function enforces a 'Structural Contract' by detecting and correcting 
+    common memory layout variations produced by different scientific libraries:
+    
+    1. HWC Pass-through: If already (H, W, 3), returns the array immediately.
+    2. Flattened Reconstruction: Detects 'Bag of Pixels' format (H*W, 3) common in 
+       color science engines (e.g., colorspacious) and reshapes to a spatial grid.
+    3. Planar Transposition: Detects 'CHW' format (3, H, W) standard in deep 
+       learning frameworks (e.g., PyTorch) and transposes it back to interleaved HWC.
+    4. C-contiguous Buffer: Recovers data from raw 1D streams (H*W*3).
+    
+    Reference:
+    - Documentation for OpenCV (cv2) and NumPy-based vision pipelines requires 
+      interleaved (HWC) memory layout for efficient spatial neighborhood operations 
+      and pixel-wise access.
+    """
     a = np.asarray(arr)
+    # Case 1: Standard HWC
     if a.ndim == 3 and a.shape[2] == 3:
         return a
+    # Case 2: Flattened List (Spatial recovery)
     if a.ndim == 2 and a.shape[1] == 3 and a.shape[0] == H * W:
         return a.reshape(H, W, 3)
+    # Case 3: Planar/CHW (Standard in Deep Learning)
     if a.ndim == 3 and a.shape[0] == 3 and a.shape[1] == H and a.shape[2] == W:
         return a.transpose(1, 2, 0)
+    # Case 4: Raw 1D Buffer
     if a.ndim == 1 and a.size == H * W * 3:
         return a.reshape(H, W, 3)
+    
     raise ValueError(f"{where} produced array with shape {a.shape}, expected {(H, W, 3)}")
 
 
 def _scale_to_uint8_per_channel(x: np.ndarray) -> np.ndarray:
-    """Vectorized min max scale per channel to 0..255 uint8."""
+    """
+    Normalizes floating-point color correlates into an 8-bit Euclidean feature space.
+    
+    This function performs a dynamic Min-Max scaling per channel to map perceptual 
+    dimensions (e.g., J', a', b') into the [0, 255] integer range. 
+    
+    Theoretical Basis:
+    1. Feature Parity: Following the 'Whitening' principle (Shapiro & Stockman, 2001), 
+       independent scaling ensures that channels with larger raw ranges (like Lightness) 
+       do not disproportionately bias the Euclidean distance calculations used in 
+       segmentation algorithms (e.g., GrabCut, K-Means).
+    2. Quantization Strategy: Mirrors the integer-mapping logic used in OpenCV's 
+       CIELAB implementation (cv.cvtColor), maximizing the 8-bit resolution to 
+       preserve 'Small Color Differences' (SCD) as defined by Luo et al. (2006).
+    
+    Programmatic Implementation:
+    - axis=(0, 1): Computes bounds across the spatial grid while preserving channels.
+    - np.putmask: Ensures numerical stability by preventing division-by-zero on 
+      achromatic or uniform-color planes.
+    - np.clip/astype: Guarantees strict adherence to the uint8 memory contract.
+    """
     x = x.astype(np.float32, copy=False)
     x_min = x.min(axis=(0, 1), keepdims=True)
     x_max = x.max(axis=(0, 1), keepdims=True)
     x_range = x_max - x_min
+    
+    # Avoid division by zero for uniform channels
     np.putmask(x_range, x_range == 0, 1.0)
+    
     normalized = (x - x_min) / x_range * 255.0
     return np.clip(normalized, 0, 255).astype(np.uint8)
 
@@ -99,7 +145,7 @@ def _hsv_conic_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     C1 = np.clip((c1 + 1.0) * 127.5, 0, 255).astype(np.uint8)
     C2 = np.clip((c2 + 1.0) * 127.5, 0, 255).astype(np.uint8)
 
-    
+
     return np.stack([C0, C1, C2], axis=2)
 
 
@@ -118,14 +164,25 @@ def _cam02_scd_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     H, W = img_rgb_u8.shape[:2]
     try:
         from colorspacious import cspace_convert  # type: ignore
+        """
+        Documentation states that they define the models from the paper:
+        Uniform colour spaces based on CIECAMO2 colour appearance model
+        Source: https://colour.readthedocs.io/en/develop/_modules/colour/models/cam02_ucs.html
+        """
         jab = cspace_convert(
-            img_rgb_u8.astype(np.float32) / 255.0,
+            img_rgb_u8.astype(np.float32) / 255.0, # colorspacious expects float in 0..1 for sRGB input
             "sRGB1",
             "CAM02-SCD"
         )
         jab = np.asarray(jab, dtype=np.float32)
+
+        """
+        jab.ndim = 2 checks if output has been flattened to a 2D matrix due to colorspacious optimizations
+        jab.shape == (H * W, 3) checks if the flattened shape matches the expected number of pixels and 3 channels
+        """
         if jab.ndim == 2 and jab.shape == (H * W, 3):
             jab = jab.reshape(H, W, 3)
+
         jab = _ensure_hwc3(jab, H, W, where="cam02_scd(colorspacious)")
         return _scale_to_uint8_per_channel(jab)
     except Exception:
