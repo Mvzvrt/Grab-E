@@ -98,7 +98,10 @@ def load_anns(p: Path) -> np.ndarray:
     """
     ext = p.suffix.lower()
     if ext == ".npy":
+        # Reads the .npy file as a memory-mapped array to avoid loading the entire file into memory at once.
         a = np.load(p, mmap_mode="r")
+        
+        # Converts the memory-mapped array to a regular NumPy array of type int32. Not 
         a = np.asarray(a, dtype=np.int32)
     elif ext in (".png", ".bmp", ".tif", ".tiff"):
         a = np.asarray(Image.open(p).convert("P"), dtype=np.int32)
@@ -254,8 +257,13 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
     guided_soft_masks: Dict[int, np.ndarray] = {}
 
     for c in classes:
+        """
+        Select the seeds for the current class as the only foreground annotation and
+        the original background seeds plus the other foreground seeds as the background annotation
+        """
         seeds_fg = (anns == c)
         seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
+
         seeds_fg, seeds_bg = mgc_refine_seeds(img_rgb_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, conf_img=img_feats_u8)
 
         if collect_models:
@@ -382,19 +390,28 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
     """
     H, W = anns.shape
     classes = sorted([int(x) for x in np.unique(anns) if x > 1])
+
     if not classes:
         return np.zeros((H, W), dtype=np.uint8)
+    
     if len(trio) != 3:
         raise ValueError("Ensemble trio must have exactly three color spaces")
+    
     workers = trio_workers if trio_workers and trio_workers > 0 else len(trio)
+
     def _predict_for_space(cs: str) -> np.ndarray:
         feats = convert_color_space(img_rgb_u8, cs)
         pred = run_one_vs_rest(feats, img_rgb_u8, anns, gc_iters=int(gc_iters), tie_mode=tie_mode)  # type: ignore
         return pred.astype(np.uint8, copy=False)
+    
+    """
+    The entry point for the parallel processing of three color space branches
+    """
     if trio_parallel:
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futures = [ex.submit(_predict_for_space, cs) for cs in trio]
             preds = [f.result() for f in futures]
+
     else:
         preds = [_predict_for_space(cs) for cs in trio]
     out = majority_vote_indexed(preds[0], preds[1], preds[2], tie_pref=int(label_tie_pref))
@@ -588,16 +605,22 @@ def _process_single_image(ann_path: str,
     # resize anns to match image if needed
     if anns.shape[:2] != img_rgb.shape[:2]:
         anns = cv.resize(anns.astype(np.int32),
-                         (img_rgb.shape[1], img_rgb.shape[0]),
+                         (img_rgb.shape[1], img_rgb.shape[0]), # cv.resize expects (width, height)
                          interpolation=cv.INTER_NEAREST)
 
     # run either majority ensemble or single space
     if enable_majority_vote:
-        trio = [s.strip() for s in (ensemble_trio if ensemble_trio else "jzazbz,jzczhz,rgb").split(",")]
+        trio = [s.strip() for s in (ensemble_trio if ensemble_trio else "ruderman_lab,oklab,jzczhz").split(",")]
+
         if len(trio) != 3:
             return {"ok": False, "base": base, "reason": "ensemble_trio must have exactly 3 entries"}
+        
+        """
+        Get tie preference for three-way ties in majority voting, otherwise opt for first model.
+        """
         tie_map = {"first": 0, "second": 1, "third": 2}
         label_tie_pref = tie_map.get(ensemble_label_tie_strategy, 0)
+
         pred = run_one_vs_rest_majority_ensemble(
             img_rgb_u8=img_rgb,
             anns=anns,
@@ -608,6 +631,7 @@ def _process_single_image(ann_path: str,
             trio_workers=int(trio_workers) if trio_workers else 0,
             label_tie_pref=label_tie_pref
         )
+
         written = []
         binary_written = []
         pre_refinement_written = []

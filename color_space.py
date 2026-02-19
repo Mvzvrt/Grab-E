@@ -47,21 +47,59 @@ def _hsv_conic_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     """
     HSV conic form, H prime equals V, S prime equals V times S times sin H, V prime equals V times S times cos H.
     OpenCV HSV has H in [0,180] representing [0,360) degrees.
+
+    By using the conic transformation, you avoid the computational errors of "undefined" variables because the multiplication by V=0 nullifies whatever noisy or arbitrary values H and S might hold for a black pixel.
     """
     img_rgb = img_rgb_u8.astype(np.uint8, copy=False)
+    
+    """
+    cv.cvtColor on output returns hsv:
+    
+    0 <= V, S <= 1, and 0 <= 360 in degrees
+    
+    However, since we have a target destination type of int8, the following conversion are performed:
+
+    V = 255 * V
+    H = 255 * H
+    H = H / 2 (fits 0 to 255 in degrees)
+
+    Source: https://docs.opencv.org/4.x/de/d25/imgproc_color_conversions.html
+    """
     hsv = cv.cvtColor(img_rgb, cv.COLOR_RGB2HSV)
-    H = hsv[:, :, 0].astype(np.float32)
+    
+    """
+    Offsets the int8 conversion from cv.cvtColor
+    For H:
+    H_deg = H * 2 (since OpenCV scales H to fit in 0..255 for 0..360 degrees)
+    H_rad = H_deg * (pi / 180) = H * 2 * (pi / 180) = H * (pi / 90)
+    """
     S = hsv[:, :, 1].astype(np.float32) / 255.0
     V = hsv[:, :, 2].astype(np.float32) / 255.0
+    H = hsv[:, :, 0].astype(np.float32)
     H_rad = (H * np.pi) / 90.0
 
+    """
+    Follows the formulation found in Shapiro's Computer Vision book explicitly mentioned as:
+    \item $F(i) = [v, v \cdot s \cdot \sin(h),\ v \cdot s \cdot \cos(h)](i)$, where $h$, $s$, and $v$ are the HSV values, for color segmentation.
+    """
     c0 = V
     c1 = V * S * np.sin(H_rad)
     c2 = V * S * np.cos(H_rad)
 
+    """
+    Since $c_0$ is in the range $[0.0, 1.0]$, it is linearly scaled to $[0, 255]$
+    """
     C0 = np.clip(c0 * 255.0, 0, 255).astype(np.uint8)
+
+    """
+    c1 and c2 are in the range of [-1.0, 1.0] from the sin and cos components. 
+    Adding 1.0 moves the range from [-1.0, 1.0] to [0.0, 2.0].
+    Multiplying by 127.5 maps that [0.0, 2.0] range perfectly into the [0, 255] unsigned integer space.
+    """
     C1 = np.clip((c1 + 1.0) * 127.5, 0, 255).astype(np.uint8)
     C2 = np.clip((c2 + 1.0) * 127.5, 0, 255).astype(np.uint8)
+
+    
     return np.stack([C0, C1, C2], axis=2)
 
 
