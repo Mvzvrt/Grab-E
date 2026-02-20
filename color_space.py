@@ -548,24 +548,46 @@ def _oklab_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
 
     ### Stands for cube root
     lms_cbrt = np.cbrt(lms)
-    
+
     lab = lms_cbrt @ _OKLAB_M2.T
     return _scale_to_uint8_per_channel(lab)
 
 def _oklch_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
+    """
+    Follows the exact ste by step to produce oklab in _oklab_from_rgb function
+    """
     rgb_lin = _srgb_u8_to_linear01(img_rgb_u8)
     lms = rgb_lin @ _OKLAB_M1.T
     lms = np.clip(lms, 0.0, None)
     lms_cbrt = np.cbrt(lms)
     lab = lms_cbrt @ _OKLAB_M2.T
+
+    """
+    Clips lightness to [0, 1] to prevent out-of-gamut issues in the final LCh conversion.
+    Extracts the L, a, b channels from the Oklab space for the subsequent conversion to LCh.
+    """
     L = np.clip(lab[:, :, 0], 0.0, 1.0)
     a = lab[:, :, 1]
     b = lab[:, :, 2]
+
+    """
+    Follows the exact conic representation formulas in Ottosom
+    https://bottosson.github.io/posts/oklab/
+    """
     C = np.sqrt(a * a + b * b)
     h = np.degrees(np.arctan2(b, a))
     h[h < 0.0] += 360.0
+    
+    """
+    Transforming to target int8 representation
+    """
+    # L contains [0, 1], so we can directly scale to [0, 255]
     L8 = np.clip(L * 255.0, 0, 255).astype(np.uint8)
-    C8 = _scale_to_uint8_per_channel(C[:, :, None])[:, :, 0]
+
+    # _scale_to_uint8_per_channel is a general purpose function that expects a 3D array with shape (H, W, 1) for the channel to be scaled. By adding a new axis with None, we create a temporary shape of (H, W, 1) that allows the function to compute the min and max across the spatial dimensions while treating the single channel as a separate entity. After scaling, we take the first (and only) channel back out with [:, :, 0] to return to the original 2D shape for that channel.
+    C8 = _scale_to_uint8_per_channel(C[:, :, None])[:, :, 0] 
+
+    # h is in degrees [0, 360), so we can directly scale to [0, 255] by multiplying by (255/360)
     h8 = np.clip((h / 360.0) * 255.0, 0, 255).astype(np.uint8)
     return np.stack([L8, C8, h8], axis=2)
 
