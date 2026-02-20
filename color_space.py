@@ -800,12 +800,29 @@ def _srgb_linear_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     return np.clip(lin * 255.0, 0, 255).astype(np.uint8)
 
 def _ycbcr_bt709_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
+    """
+    Taken from the BT.709 documentation:
+    Source: https://www.itu.int/dms_pubrec/itu-r/rec/bt/R-REC-BT.709-6-201506-I!!PDF-E.pdf
+    img_rgb_u8 is expected to be non-linear and pre-connected to a display device, so we can directly apply the conversion formulas without needing to linearize first.
+    """
     rp = img_rgb_u8[:, :, 0].astype(np.float32) / 255.0
     gp = img_rgb_u8[:, :, 1].astype(np.float32) / 255.0
     bp = img_rgb_u8[:, :, 2].astype(np.float32) / 255.0
+
+    """
+    Deriving of luminance signal Y
+    """
     Yp = 0.2126 * rp + 0.7152 * gp + 0.0722 * bp
-    Cb = -0.1146 * rp - 0.3854 * gp + 0.5 * bp
-    Cr =  0.5 * rp - 0.4542 * gp - 0.0458 * bp
+    
+    """
+    Deriving Cb and Cr signals
+    """
+    Cb = -0.11457211 * rp - 0.38542789 * gp + 0.5 * bp
+    Cr =  0.5 * rp - 0.4541529 * gp - 0.04584709 * bp
+
+    """
+    Y is in [0, 1] and Cb, Cr are in [-0.5, 0.5], so we scale and shift accordingly to fit into uint8 range for visualization or storage.
+    """
     Y8  = np.clip(Yp * 255.0, 0, 255).astype(np.uint8)
     Cb8 = np.clip((Cb + 0.5) * 255.0, 0, 255).astype(np.uint8)
     Cr8 = np.clip((Cr + 0.5) * 255.0, 0, 255).astype(np.uint8)
