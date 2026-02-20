@@ -211,14 +211,89 @@ _SRGB_TO_XYZ = np.array([
     [0.019334, 0.119192, 0.950304],
 ], dtype=np.float32)
 
-# Matrices for BT.2020 conversions used by ICtCp
+"""
+Source: https://www.itu.int/dms_pubrec/itu-r/rec/bt/R-REC-BT.2020-2-201510-I!!PDF-E.pdf
+BT2020 constants:
+Chromacity coordinates for the RGB2020: 
+
+(x_r = 0.708, y_r = 0.292), (x_g = 0.170, y_g = 0.797), (x_b = 0.131, y_b = 0.046)
+
+Reference white D65: (0.3127, 0.3290)
+
+Source: http://www.brucelindbloom.com/index.html?Eqn_RGB_XYZ_Matrix.html
+
+X_r = 0.708 / 0.292 = 2.42465753
+Y_r = 1
+Z_r = (1 - 0.708 - 0.292) / 0.292 = 0.0 / 0.292 = 0
+
+X_g = 0.170 / 0.797 = 0.21329987 
+Y_g = 1
+Z_g = (1 - 0.170 - 0.797) / 0.797 = 0.033 / 0.797 = 0.04140527
+
+X_b = 0.131 / 0.046 = 2.84782609
+Y_b = 1
+Z_b = (1 - 0.131 - 0.046) / 0.046 = 0.823 / 0.046 = 17.89130435
+
+Source: https://engineering.purdue.edu/~bouman/ece637/notes/pdf/ColorSpaces.pdf
+The source above states that the reference white determines the color associated with (r, g, b) = (1, 1, 1).
+Therefore, since Y represents luminance or perceived brightness, then Y_w = 1 for the reference white.
+The following relationship is determined
+
+x_w = X_w / (X_w + Y_w + Z_w)
+y_w = Y_w / (X_w + Y_w + Z_w)
+
+Rewritten:
+
+X_w = x_w / y_w = 0.3127 / 0.3290 = 0.95045592
+Y_w = 1
+Z_w = (1 - x_w - y_w) / y_w = (1 - 0.3127 - 0.3290) / 0.3290 = 1.08905775
+
+Then, we get the matrix:
+
+P = [
+    [2.42465753, 0.21329987,  2.84782609],
+    [1,          1,           1         ],
+    [0,          0.04140527, 17.89130435],
+]
+
+Taking the inverse of this matrix, we get:
+
+P_i = [
+    [ 0.45096463,  -0.09343478,  -0.06655937],
+    [-0.4520107,    1.09597115,   0.01069104],
+    [ 0.00104607,  -0.00253637,   0.05586833],
+]
+
+Multiply it with the reference white trimulus:
+      [
+        [0.95045592],
+P_i *   [1         ],
+        [1.08905775],
+      ]
+
+We get:
+S_r = 0.26270022, S_g = 0.67799806, S_b = 0.05930171
+
+Where we are able to build:
+
+M = [
+        [0.63695806, 0.14461689, 0.16888095],
+        [0.26270022, 0.67799806, 0.05930171],
+        [0,          0.02807269, 1.06098494],
+    ]
+
+And lastly since M is for RGB to XYZ, we take the inverse of M to get XYZ to RGB which is in BT2020 by RGB20 chromacity coordinates which is now seen in _XYZ_TO_BT2020
+"""
+
 _XYZ_TO_BT2020 = np.array([
-    [ 1.71666343, -0.35567332, -0.25336809],
-    [-0.66667384,  1.61645574,  0.01576830],
-    [ 0.01764248, -0.04277698,  0.94224328],
+    [ 1.71665114, -0.35567074, -0.25336626],
+    [-0.66668436,  1.61648125,  0.01576854],
+    [ 0.01763985, -0.04277061,  0.94210322],
 ], dtype=np.float32)
 
-# ICtCp matrices from BT.2100 PQ form, scaled by 1 4096
+"""
+Taken from the BT2100 documentation
+"""
 _ICTCP_RGB2020_TO_LMS = (1.0 / 4096.0) * np.array([
     [1688, 2146,  262],
     [ 683, 2951,  462],
@@ -445,7 +520,7 @@ def _cam16_forward_JMh_from_rgb(img_rgb_u8: np.ndarray) -> Tuple[int, int, np.nd
     # Step 8 is skipped as correlate of brightness Q is not needed for SCD and JMh features.
 
     """
-    Step 9
+    Step 9: Calculate correlates of chroma (C) and colorfulness (M)
     """
     p1 = (50000.0 / 13.0) * Nc * N_cb * e * np.sqrt(a * a + b * b)
     p2 = RGB_a @ np.array([1.0, 1.0, 21.0 / 20.0], dtype=np.float32)
@@ -619,17 +694,19 @@ _JZ_M2 = np.array([
     [0.199076,  1.096799, -1.295875],
 ], dtype=np.float32)
 
-def _pq_oetf_inverse(x: np.ndarray) -> np.ndarray:
+def _pq_oetf_inverse(x: np.ndarray, m2: float) -> np.ndarray:
     """
     Follows formulation of Equation 10 but does not include
     1/10000 since input is linearized and scaled to [0, 1] 
     where in the formulations scales to [0, 10000] where 10000 is peak luminance
+
+    Used similarly in the BT2100 documentation
     """
     x = np.clip(x.astype(np.float32), 0.0, None)
     x_m = np.power(x, _JZ_n)
     num = _JZ_c1 + _JZ_c2 * x_m
     den = 1.0 + _JZ_c3 * x_m
-    y = np.power(num / np.maximum(den, 1e-12), _JZ_p)
+    y = np.power(num / np.maximum(den, 1e-12), m2)
     return y.astype(np.float32)
 
 def _jzazbz_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
@@ -662,7 +739,7 @@ def _jzazbz_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     """
     Corresponds to Eq. 10
     """
-    LMS_p = _pq_oetf_inverse(LMS)
+    LMS_p = _pq_oetf_inverse(LMS, _JZ_p)
     
     """
     Corresponds to Eq. 11
@@ -694,7 +771,7 @@ def _jzczhz_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     Zp = Z
     XYZp = np.stack([Xp, Yp, Zp], axis=2)
     LMS = XYZp @ _JZ_M1.T
-    LMS_p = _pq_oetf_inverse(LMS)
+    LMS_p = _pq_oetf_inverse(LMS, _JZ_p)
     IzAzBz = LMS_p @ _JZ_M2.T
     Iz = IzAzBz[:, :, 0]
     az = IzAzBz[:, :, 1]
@@ -708,7 +785,6 @@ def _jzczhz_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     hz = np.degrees(np.arctan2(bz, az))
     hz[hz < 0.0] += 360.0
 
-    
     J8 = _scale_to_uint8_per_channel(Jz[:, :, None])[:, :, 0]
     C8 = _scale_to_uint8_per_channel(Cz[:, :, None])[:, :, 0]
     h8 = np.clip((hz / 360.0) * 255.0, 0, 255).astype(np.uint8)
@@ -735,13 +811,40 @@ def _ycbcr_bt709_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     Cr8 = np.clip((Cr + 0.5) * 255.0, 0, 255).astype(np.uint8)
     return np.stack([Y8, Cb8, Cr8], axis=2)
 
+"""
+*Similar constants in Jzazbz* except
+"""
+_BT2100_m2 = 78.84375
+
 def _ictcp_pq_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
+    """
+    Preprocessing step using safe assumption that most images will from standard digital cameras.
+    They primarily use BT.709 primaries, in other words non-HDR. Therefore, we convert first to XYZ which is device independent.
+    Then, from XYZ we go to BT.2020 RGB which follows the conventions on BT.2020. 
+
+    Source: https://www.itu.int/dms_pubrec/itu-r/rec/bt/R-REC-BT.2020-2-201510-I!!PDF-E.pdf
+
+    Note: Refer to documentation above _XYZ_TO_BT2020 for the derivation of the matrix
+    """
     rgb_lin = _srgb_u8_to_linear01(img_rgb_u8)
     XYZ = rgb_lin @ _SRGB_TO_XYZ.T
     rgb2020_lin = XYZ @ _XYZ_TO_BT2020.T
+
+    """
+    Converts from linear BT.2020 RGB to LMS
+    """
     LMS = rgb2020_lin @ _ICTCP_RGB2020_TO_LMS.T
     LMS = np.clip(LMS, 0.0, None)
-    LMS_p = _pq_oetf_inverse(LMS)
+    
+    """
+    Applies the PQ OETF inverse to get LMS prime. 1/10000 scaling is bypassed as
+    LMS is already in a [0, 1].
+    """
+    LMS_p = _pq_oetf_inverse(LMS, _BT2100_m2)
+
+    """
+    Matrix format for optimization but generates I, C_t, and C_p
+    """
     ICTCP = LMS_p @ _ICTCP_LMS_TO_ICTCP_PQ.T
     return _scale_to_uint8_per_channel(ICTCP)
 
@@ -830,7 +933,6 @@ def get_color_converter(mode: str) -> Optional[Callable[[np.ndarray], np.ndarray
         'log_chroma': _log_chroma_from_rgb,
     }
     return converters.get(mode.lower())
-
 
 def convert_color_space(img_rgb_u8: np.ndarray, mode: str) -> np.ndarray:
     fn = get_color_converter(mode)
