@@ -355,19 +355,7 @@ def _srgb_u8_to_linear01(img_rgb_u8: np.ndarray) -> np.ndarray:
     This function removes the sRGB transfer function (gamma encoding) to 
     recover the linear Tristimulus values required for colorimetry.
     
-    Source: 
-        IEC 61966-2-1:1999 (Multimedia systems and equipment - Colour 
-        measurement and management - Part 2-1: Colour management - 
-        Default RGB colour space - sRGB)
-        Link: https://webstore.iec.ch/publication/6169
-        (Technical Summary: https://www.color.org/sRGB.xalter)
-    
-    Constants:
-        - Threshold (0.04045): The point where the curve switches from linear 
-          to power law.
-        - Slope (12.92): The gradient of the linear segment near black.
-        - Exponent (2.4): The power used for the non-linear segment (often 
-          approximated as 2.2, but the standard specifies 2.4 with an offset).
+    Source: https://bottosson.github.io/posts/colorwrong/#what-can-we-do%3F
     """
     # Normalize 0-255 integers to 0.0-1.0 floats
     x = img_rgb_u8.astype(np.float32, copy=False) / 255.0
@@ -529,12 +517,17 @@ def _cam16_scd_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
 
 # ---------- Added modern color spaces ----------
 
-# OKLab matrices from Ottosson
+"""
+Directly taken from Ottoson blog
+
+Source: https://bottosson.github.io/posts/oklab/
+"""
 _OKLAB_M1 = np.array([
     [0.4122214708, 0.5363325363, 0.0514459929],
     [0.2119034982, 0.6806995451, 0.1073969566],
     [0.0883024619, 0.2817188376, 0.6299787005],
 ], dtype=np.float32)
+
 _OKLAB_M2 = np.array([
     [ 0.2104542553,  0.7936177850, -0.0040720468],
     [ 1.9779984951, -2.4285922050,  0.4505937099],
@@ -542,10 +535,20 @@ _OKLAB_M2 = np.array([
 ], dtype=np.float32)
 
 def _oklab_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
+    """
+    Follows the exact step by step in:
+    Lab linear_srgb_to_oklab(RGB c) pseudocode
+    Source: https://bottosson.github.io/posts/oklab/
+    """
     rgb_lin = _srgb_u8_to_linear01(img_rgb_u8)
     lms = rgb_lin @ _OKLAB_M1.T
-    lms = np.clip(lms, 0.0, None)
+
+    ### Guard rail for extreme cases
+    lms = np.clip(lms, 0.0, None) 
+
+    ### Stands for cube root
     lms_cbrt = np.cbrt(lms)
+    
     lab = lms_cbrt @ _OKLAB_M2.T
     return _scale_to_uint8_per_channel(lab)
 
