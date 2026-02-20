@@ -543,10 +543,10 @@ def _oklab_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     rgb_lin = _srgb_u8_to_linear01(img_rgb_u8)
     lms = rgb_lin @ _OKLAB_M1.T
 
-    ### Guard rail for extreme cases
+    # Guard rail for extreme cases
     lms = np.clip(lms, 0.0, None) 
 
-    ### Stands for cube root
+    # Stands for cube root
     lms_cbrt = np.cbrt(lms)
 
     lab = lms_cbrt @ _OKLAB_M2.T
@@ -591,16 +591,21 @@ def _oklch_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     h8 = np.clip((h / 360.0) * 255.0, 0, 255).astype(np.uint8)
     return np.stack([L8, C8, h8], axis=2)
 
-# JzAzBz, PQ based, constants per Safdar
+"""
+Taken from the paper:
+Perceptually uniform color space for image signals including high dynamic range and wide gamut
+
+Constants defined in Section 5.2: Full Model of Jzazbz
+"""
+_JZ_b  = 1.15
+_JZ_g  = 0.66
 _JZ_c1 = 0.8359375
 _JZ_c2 = 18.8515625
 _JZ_c3 = 18.6875
 _JZ_n  = 0.1593017578125
-_JZ_p  = 78.84375
-_JZ_b  = 1.15
-_JZ_g  = 0.66
+_JZ_p  = 134.034375
 _JZ_d  = -0.56
-_JZ_d0 = 1.6295499532821566e-11
+_JZ_d0 = 1.6295499532821566e-11 # e-11 = 10 ** (-11)
 
 _JZ_M1 = np.array([
     [ 0.41478972, 0.57999900, 0.01464800],
@@ -615,7 +620,11 @@ _JZ_M2 = np.array([
 ], dtype=np.float32)
 
 def _pq_oetf_inverse(x: np.ndarray) -> np.ndarray:
-    """Apply ST 2084 inverse EOTF, maps linear relative luminance to PQ signal."""
+    """
+    Follows formulation of Equation 10 but does not include
+    1/10000 since input is linearized and scaled to [0, 1] 
+    where in the formulations scales to [0, 10000] where 10000 is peak luminance
+    """
     x = np.clip(x.astype(np.float32), 0.0, None)
     x_m = np.power(x, _JZ_n)
     num = _JZ_c1 + _JZ_c2 * x_m
@@ -624,26 +633,57 @@ def _pq_oetf_inverse(x: np.ndarray) -> np.ndarray:
     return y.astype(np.float32)
 
 def _jzazbz_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
+    """
+    Follows the process defined in Section 5.2: Full Model of Jzazbz
+    """
+
+    """
+    Converts RGB to XYZ
+    """
     rgb_lin = _srgb_u8_to_linear01(img_rgb_u8)
     XYZ = rgb_lin @ _SRGB_TO_XYZ.T
     X = XYZ[:, :, 0]
     Y = XYZ[:, :, 1]
     Z = XYZ[:, :, 2]
+
+    """
+    Corresponds to Eq. 8
+    """
     Xp = _JZ_b * X - (_JZ_b - 1.0) * Z
     Yp = _JZ_g * Y - (_JZ_g - 1.0) * X
     Zp = Z
+
+    """
+    Corresponds to Eq. 9
+    """
     XYZp = np.stack([Xp, Yp, Zp], axis=2)
     LMS = XYZp @ _JZ_M1.T
+
+    """
+    Corresponds to Eq. 10
+    """
     LMS_p = _pq_oetf_inverse(LMS)
+    
+    """
+    Corresponds to Eq. 11
+    """
     IzAzBz = LMS_p @ _JZ_M2.T
     Iz = IzAzBz[:, :, 0]
     az = IzAzBz[:, :, 1]
     bz = IzAzBz[:, :, 2]
+
+    """
+    Corresponds to Eq. 12
+    """
     Jz = ((1.0 + _JZ_d) * Iz) / (1.0 + _JZ_d * Iz) - _JZ_d0
+    
     jzazbz = np.stack([Jz, az, bz], axis=2).astype(np.float32)
     return _scale_to_uint8_per_channel(jzazbz)
 
 def _jzczhz_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
+    """
+    Follows the same process as _jzazbz_from_rgb but adds the final step of converting from Cartesian (a, b) to polar (C, h) coordinates for the chroma components.
+    """
     rgb_lin = _srgb_u8_to_linear01(img_rgb_u8)
     XYZ = rgb_lin @ _SRGB_TO_XYZ.T
     X = XYZ[:, :, 0]
@@ -660,9 +700,15 @@ def _jzczhz_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     az = IzAzBz[:, :, 1]
     bz = IzAzBz[:, :, 2]
     Jz = ((1.0 + _JZ_d) * Iz) / (1.0 + _JZ_d * Iz) - _JZ_d0
+
+    """
+    Corresponds to Eq. 13 and 14
+    """
     Cz = np.sqrt(az * az + bz * bz)
     hz = np.degrees(np.arctan2(bz, az))
     hz[hz < 0.0] += 360.0
+
+    
     J8 = _scale_to_uint8_per_channel(Jz[:, :, None])[:, :, 0]
     C8 = _scale_to_uint8_per_channel(Cz[:, :, None])[:, :, 0]
     h8 = np.clip((hz / 360.0) * 255.0, 0, 255).astype(np.uint8)
