@@ -921,14 +921,39 @@ def _ruderman_lab_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     lab = lms_log @ M_lms2lab.T
     return _scale_to_uint8_per_channel(lab)
 
-# --- Opponent O1,O2,O3 ---
 def _opponent_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
-    x = img_rgb_u8.astype(np.float32) / 255.0
-    R, G, B = x[..., 0], x[..., 1], x[..., 2]
-    O1 = (R + G + B) / 3.0
-    O2 = G - R
-    O3 = B - (R + G) / 2.0
+    """
+    Converts an sRGB image to the Opponent Color Space (O1, O2, O3) 
+    using a linearized input for physical accuracy.
+    
+    Source: van de Sande, K. E., Gevers, T., & Snoek, C. G. (2010). 
+    "Color Descriptors for Object Category Recognition."
+    
+    Processing Steps:
+        1. Remove sRGB gamma (Linearization)
+        2. Apply Orthonormal Opponent Transformation (Eq. 4)
+        3. Scale to uint8
+    """
+    # 1. Linearize the sRGB input (converts 0-255 uint8 to 0.0-1.0 linear floats)
+    x_lin = _srgb_u8_to_linear01(img_rgb_u8)
+    
+    R = x_lin[..., 0]
+    G = x_lin[..., 1]
+    B = x_lin[..., 2]
+
+    # 2. Compute Channels using Orthonormal Constants (Eq. 4)
+    # O1: Red-Green Opponency
+    O1 = (R - G) / np.sqrt(2.0)
+    
+    # O2: Yellow-Blue Opponency
+    O2 = (R + G - 2.0 * B) / np.sqrt(6.0)
+    
+    # O3: Intensity (Luminance)
+    O3 = (R + G + B) / np.sqrt(3.0)
+
+    # 3. Stack channels as [O1, O2, O3]
     opp = np.stack([O1, O2, O3], axis=2).astype(np.float32)
+
     return _scale_to_uint8_per_channel(opp)
 
 # --- Log-chromaticity, I, log(R/G), log(B/G) ---
