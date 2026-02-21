@@ -956,16 +956,30 @@ def _opponent_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
 
     return _scale_to_uint8_per_channel(opp)
 
-# --- Log-chromaticity, I, log(R/G), log(B/G) ---
-def _log_chroma_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
-    eps = 1e-6
-    x = img_rgb_u8.astype(np.float32) / 255.0
-    R, G, B = x[..., 0] + eps, x[..., 1] + eps, x[..., 2] + eps
-    I = 0.299 * R + 0.587 * G + 0.114 * B
-    Lrg = np.log(R / G)
-    Lbg = np.log(B / G)
-    out = np.stack([I, Lrg, Lbg], axis=2).astype(np.float32)
-    return _scale_to_uint8_per_channel(out)
+# def _log_chroma_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
+#     """
+#     Converts sRGB to Log-Chromaticity space.
+#     Source: Finlayson et al. (2004), "Intrinsic Images by Entropy Minimization"
+    
+#     This space is designed to be invariant to changes in light intensity 
+#     and shadows.
+#     """
+#     eps = 1e-6
+#     # 1. Linearization is REQUIRED for the R/G ratio math to be physically valid
+#     x_lin = _srgb_u8_to_linear01(img_rgb_u8) + eps
+    
+#     R, G, B = x_lin[..., 0], x_lin[..., 1], x_lin[..., 2]
+    
+#     # 2. Intensity (Achromatic channel)
+#     I = 0.299 * R + 0.587 * G + 0.114 * B
+    
+#     # 3. Log-chromaticity coordinates
+#     # log(R/G) and log(B/G) separate color from brightness
+#     Lrg = np.log(R / G)
+#     Lbg = np.log(B / G)
+    
+#     out = np.stack([I, Lrg, Lbg], axis=2).astype(np.float32)
+#     return _scale_to_uint8_per_channel(out)
 
 # ---------- colorspace router with caching ----------
 
@@ -988,7 +1002,6 @@ def get_color_converter(mode: str) -> Optional[Callable[[np.ndarray], np.ndarray
         'srgb_linear': _srgb_linear_from_rgb,
         'ruderman_lab': _ruderman_lab_from_rgb,
         'opponent': _opponent_from_rgb,
-        'log_chroma': _log_chroma_from_rgb,
     }
     return converters.get(mode.lower())
 
