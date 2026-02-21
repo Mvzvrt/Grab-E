@@ -204,6 +204,8 @@ _CAT16 = np.array([
 
 """
 Standard conversion matrix from sRGB to CIE XYZ (assuming D65 white point)
+
+Source: https://www.color.org/sRGB.xalter
 """
 _SRGB_TO_XYZ = np.array([
     [0.412456, 0.357576, 0.180438],
@@ -791,6 +793,11 @@ def _jzczhz_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     return np.stack([J8, C8, h8], axis=2)
 
 def _xyz_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
+    """
+    Follows the specifications found in sRGB documentation
+
+    Source: https://www.color.org/sRGB.xalter
+    """
     rgb_lin = _srgb_u8_to_linear01(img_rgb_u8)
     XYZ = rgb_lin @ _SRGB_TO_XYZ.T
     return _scale_to_uint8_per_channel(XYZ)
