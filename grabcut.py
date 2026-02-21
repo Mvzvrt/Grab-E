@@ -26,7 +26,6 @@ from tqdm import tqdm
 import sys, pathlib
 sys.path.append(str(pathlib.Path(__file__).parent / "mgc_core"))
 from mgc_api import mgc_refine_seeds, mgc_post_smooth_mask
-from ao_api import ao_refine_seeds
 
 # ---------- constants / palette ----------
 NUM_VOC_CLASSES = 21
@@ -44,13 +43,11 @@ def voc_palette() -> np.ndarray:
             lab >>= 3
     return pal
 
-
 def save_indexed_png(mask_2d: np.ndarray, path: str) -> None:
     img = Image.fromarray(mask_2d.astype(np.uint8))
     img = img.convert("P")
     img.putpalette(voc_palette().ravel())
     img.save(path)
-
 
 # ---------- I/O ----------
 
