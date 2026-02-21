@@ -869,18 +869,15 @@ def _ictcp_pq_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
 
 def _ruderman_lab_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     """
-    Ruderman l alpha beta opponent space.
-    Steps:
-      sRGB to linear RGB
-      linear RGB to LMS using Smith and Pokorny fundamentals
-      log10 on LMS
-      orthonormal transform to l, alpha, beta
-    Returns uint8 features scaled per channel.
-    """
-    # sRGB to linear
-    lin = _srgb_u8_to_linear01(img_rgb_u8)
+    Matrix is found for RGB to LMS matrix
 
-    # linear RGB to LMS
+    Source: E. Reinhard, M. Adhikhmin, B. Gooch and P. Shirley, "Color transfer between images," in IEEE Computer Graphics and Applications, vol. 21, no. 5, pp. 34-41, July-Aug. 2001, doi: 10.1109/38.946629. keywords: {Image converters;Decorrelation;Matrix converters;Least squares approximation;Principal component analysis;Statistical analysis;Image color analysis;Humans;Visual system;Signal processing},
+    """
+
+    """
+    Corresponds to Eq. 4
+    """
+    lin = _srgb_u8_to_linear01(img_rgb_u8)
     M_rgb2lms = np.array([
         [0.3811, 0.5783, 0.0402],
         [0.1967, 0.7244, 0.0782],
@@ -888,14 +885,22 @@ def _ruderman_lab_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     ], dtype=np.float32)
     lms = lin @ M_rgb2lms.T
 
+    """
+    Corresponds to Eq. 5
+    """
     # avoid log of zero
     lms = np.maximum(lms, 1e-6)
     lms_log = np.log10(lms)
 
-    # log LMS to l alpha beta via orthonormal matrix
+
+    """
+    Corresponds to Eq. 6 
+    """
     inv_sqrt3 = 1.0 / np.sqrt(3.0)
     inv_sqrt6 = 1.0 / np.sqrt(6.0)
     inv_sqrt2 = 1.0 / np.sqrt(2.0)
+
+    # Created by multiplying the two matrices in Eq. 6
     M_lms2lab = np.array([
         [inv_sqrt3,  inv_sqrt3,  inv_sqrt3],
         [inv_sqrt6,  inv_sqrt6, -2.0 * inv_sqrt6],
