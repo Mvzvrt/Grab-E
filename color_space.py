@@ -934,12 +934,12 @@ def _opponent_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
         2. Apply Orthonormal Opponent Transformation (Eq. 4)
         3. Scale to uint8
     """
-    # 1. Linearize the sRGB input (converts 0-255 uint8 to 0.0-1.0 linear floats)
-    x_lin = _srgb_u8_to_linear01(img_rgb_u8)
+    # 1. Normalize RGB input
+    x = img_rgb_u8.astype(np.float32) / 255.0
     
-    R = x_lin[..., 0]
-    G = x_lin[..., 1]
-    B = x_lin[..., 2]
+    R = x[..., 0]
+    G = x[..., 1]
+    B = x[..., 2]
 
     # 2. Compute Channels using Orthonormal Constants (Eq. 4)
     # O1: Red-Green Opponency
