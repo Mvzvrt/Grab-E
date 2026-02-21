@@ -794,7 +794,7 @@ def _jzczhz_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
 
 def _xyz_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     """
-    Follows the specifications found in sRGB documentation
+    Follows the specifications found in XYZ documentation
 
     Source: https://www.color.org/sRGB.xalter
     """
@@ -803,6 +803,10 @@ def _xyz_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
     return _scale_to_uint8_per_channel(XYZ)
 
 def _srgb_linear_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
+    """
+    Follows specifications from:
+    Source: https://bottosson.github.io/posts/colorwrong/#what-can-we-do%3F
+    """
     lin = _srgb_u8_to_linear01(img_rgb_u8)
     return np.clip(lin * 255.0, 0, 255).astype(np.uint8)
 
