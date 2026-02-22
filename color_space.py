@@ -126,7 +126,7 @@ def _hsv_conic_from_rgb(img_rgb_u8: np.ndarray) -> np.ndarray:
 
     """
     Follows the formulation found in Shapiro's Computer Vision book explicitly mentioned as:
-    \item $F(i) = [v, v \cdot s \cdot \sin(h),\ v \cdot s \cdot \cos(h)](i)$, where $h$, $s$, and $v$ are the HSV values, for color segmentation.
+    $F(i) = [v, v * s * sin(h), v * s * cos(h)](i)$, where $h$, $s$, and $v$ are the HSV values, for color segmentation.
     """
     c0 = V
     c1 = V * S * np.sin(H_rad)
