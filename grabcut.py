@@ -130,7 +130,7 @@ def base_from_ann_name(name: str) -> str:
 
 
 # ---------- color-space helpers moved to color_space.py ----------
-from color_space import convert_color_space, get_color_converter  # type: ignore
+from color_space import convert_color_space  # type: ignore
 
 
 # ---------- OpenCV GrabCut, single call ----------
