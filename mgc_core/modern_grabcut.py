@@ -230,16 +230,6 @@ def edges_structured_forests(img_rgb: np.ndarray, model_path: Optional[str]) -> 
     m = float(E.max()) + 1e-6 ### 1e-6 to avoid divide-by-zero
     return (E / m).astype(np.float32, copy=False)
 
-
-def get_edge_map(img_rgb: np.ndarray,
-                 edge_backend: str = "auto",
-                 structured_model: Optional[str] = None,
-                 use_texture: bool = False,
-                 dbg: Optional[DebugRecorder]=None,
-                 tag: str="00_edge_map.png") -> np.ndarray:
-    
-    return edges_structured_forests(img_rgb, structured_model)
-
 # ---------- Guided filter (edge-aware smoothing for snapping) ----------
 def _boxfilter(img: np.ndarray, r: int) -> np.ndarray:
     if img.ndim == 2:

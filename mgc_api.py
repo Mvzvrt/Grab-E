@@ -106,7 +106,7 @@ def mgc_refine_seeds(img_rgb_u8: np.ndarray,
     else:
         E = mgc.edges_structured_forests(
             img_rgb_u8,
-            structured_model=p["structured_model"],
+            model_path=p["structured_model"],
         )
         _LAST_E_KEY, _LAST_E_VAL = key, E
 
