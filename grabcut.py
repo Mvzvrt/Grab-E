@@ -142,21 +142,18 @@ def opencv_grabcut_once(img_feats_u8: np.ndarray,
                         return_models: bool = False,
                         return_mask_states: bool = False
                         ) -> np.ndarray | Tuple[np.ndarray, np.ndarray, np.ndarray] | Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    
     """
-    Run cv2.grabCut once with firm seeds and return a binary mask, 1 FG, 0 BG.
-    Works on any 3 channel 8 bit image of per pixel features.
-
-    New options:
-      return_models, when True, returns (bin_mask, bgdModel, fgdModel)
-      return_mask_states, when True with return_models, returns (bin_mask, bgdModel, fgdModel, raw_mask_states)
-
-    Notes:
-      - bgdModel, fgdModel are OpenCV's 1x65 buffers, and the raw GrabCut mask uses labels {0=BGD,1=FGD,2=PR_BGD,3=PR_FGD}.
+    Input error handling. Ensures image features are uint8 and have three channels, and that seed masks match image dimensions. If no foreground seeds are provided, returns an empty mask immediately.
     """
     if img_feats_u8.dtype != np.uint8:
-        img_feats_u8 = np.clip(img_feats_u8, 0, 255).astype(np.uint8)
+        raise TypeError(
+            f"GrabCut requires uint8 features. Got {img_feats_u8.dtype}. "
+            "Ensure the color converter scales data to [0, 255] before calling."
+        )
+
     if img_feats_u8.ndim != 3 or img_feats_u8.shape[2] != 3:
-        raise ValueError(f"Expected HxWx3, got shape {img_feats_u8.shape}")
+        raise ValueError(f"Expected HxWx3 topology, got shape {img_feats_u8.shape}")
 
     H, W, _ = img_feats_u8.shape
 
@@ -167,13 +164,14 @@ def opencv_grabcut_once(img_feats_u8: np.ndarray,
 
     if not np.any(seeds_fg):
         empty = np.zeros((H, W), dtype=np.uint8)
-        if return_models:
-            if return_mask_states:
-                return empty, np.zeros((1, 65), np.float64), np.zeros((1, 65), np.float64), empty.copy()
-            else:
-                return empty, np.zeros((1, 65), np.float64), np.zeros((1, 65), np.float64)
         return empty
 
+    """
+    Initialize annotation mask with OpenCV's expected labels: GC_BGD=0, GC_FGD=1, GC_PR_BGD=2, GC_PR_FGD=3. In this case, we fill the annotation mask with 2 (probable background) and then set the firm background seeds to 0 and firm foreground seeds to 1.
+
+    Follows the same step by step process as seen in the demo below with GC_INIT_WITH_MASK:
+    Source: https://vovkos.github.io/doxyrest-showcase/opencv/sphinx_rtd_theme/page_tutorial_py_grabcut.html
+    """
     mask = np.full((H, W), cv.GC_PR_BGD, dtype=np.uint8)
     mask[seeds_bg] = cv.GC_BGD
     mask[seeds_fg] = cv.GC_FGD
@@ -181,17 +179,12 @@ def opencv_grabcut_once(img_feats_u8: np.ndarray,
     bgdModel = np.zeros((1, 65), np.float64)
     fgdModel = np.zeros((1, 65), np.float64)
 
-    try:
-        cv.grabCut(img_feats_u8, mask, None, bgdModel, fgdModel, int(iters), cv.GC_INIT_WITH_MASK)
-    except cv.error as e:
-        raise RuntimeError(f"OpenCV GrabCut failed: {e}") from e
+    cv.grabCut(img_feats_u8, mask, None, bgdModel, fgdModel, 5, cv.GC_INIT_WITH_MASK)
 
+    """
+    Create the binary mask by asking whether the resulting mask is either GC_FGD (1) or GC_PR_FGD (3), which we treat as foreground, and everything else as background.
+    """
     bin_mask = np.where((mask == cv.GC_FGD) | (mask == cv.GC_PR_FGD), 1, 0).astype(np.uint8)
-
-    if return_models:
-        if return_mask_states:
-            return bin_mask, bgdModel.copy(), fgdModel.copy(), mask.copy()
-        return bin_mask, bgdModel.copy(), fgdModel.copy()
     return bin_mask
 
 
@@ -261,33 +254,22 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
         seeds_fg = (anns == c)
         seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
 
-        seeds_fg, seeds_bg = mgc_refine_seeds(img_rgb_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, conf_img=img_feats_u8)
 
-        if collect_models:
-            y, bgm, fgm = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters, return_models=True)  # type: ignore
-            models_by_class[c] = {"bgdModel": bgm, "fgdModel": fgm}
-        else:
-            y = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters)  # type: ignore
+        """
+        Performs seed expansio via geodesic distance calculation and simplified GMM LAB confidence
+        """
+        seeds_fg, seeds_bg = mgc_refine_seeds(img_rgb_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, conf_img=img_feats_u8)
         
-        # Store pre-refinement mask if requested
-        if collect_pre_refinement_masks:
-            fg_masks_pre[c] = y.copy()
+        """
+        Passes color converted image and expanded seeds for GrabCut run
+        """
+        y = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, iters=gc_iters)  # type: ignore
         
-        # Apply post-processing refinement
-        if collect_superpixels or collect_guided_soft:
-            # Enable superpixel snapping if we need to collect superpixels
-            y, intermediates = mgc_post_smooth_mask(
-                img_rgb_u8, y, guide_img=img_rgb_u8, 
-                return_intermediates=True,
-                superpixel_snap_flag=collect_superpixels  # Enable if collecting superpixels
-            )
-            if collect_superpixels and 'superpixel_seg' in intermediates:
-                superpixel_segs[c] = intermediates['superpixel_seg']
-            if collect_guided_soft and 'guided_soft' in intermediates:
-                guided_soft_masks[c] = intermediates['guided_soft']
-        else:
-            y = mgc_post_smooth_mask(img_rgb_u8, y, guide_img=img_rgb_u8)
-        fg_masks[c] = y  # binary 0 or 1 (post-refinement)
+        """
+        Performs post-refinement using Guided Image Filtering
+        """
+        y = mgc_post_smooth_mask(img_rgb_u8, y)
+        fg_masks[c] = y # binary 0 or 1
 
     final = _combine_fg_masks_to_final(fg_masks, anns, tie_mode)
     

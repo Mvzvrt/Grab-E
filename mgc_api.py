@@ -131,101 +131,11 @@ def mgc_refine_seeds(img_rgb_u8: np.ndarray,
 
 
 def mgc_post_smooth_mask(img_rgb_u8: np.ndarray,
-                        bin_mask01: np.ndarray,
-                        guide_img: np.ndarray | None = None,
-                        return_intermediates: bool = False,
-                        **kwargs) -> np.ndarray:
+                        bin_mask01: np.ndarray) -> np.ndarray:
     """
-    Post step that cleans and snaps the mask, then returns a {0,1} uint8 mask.
-
-    Steps
-      1) edge-aware small region cleanup
-      2) optional SLIC superpixel majority snap
-      3) guided filter snapping
-
-    img_rgb_u8, image used for edge map in step 1.
-    guide_img, optional guidance image for the guided snap in step 3, else uses img_rgb_u8.
-    return_intermediates, when True returns (final_mask, intermediates_dict) where intermediates_dict contains:
-        - 'superpixel_seg': superpixel segmentation map (if superpixel_snap_flag is True)
-        - 'guided_soft': soft mask from guided filter (if snap_guided is True)
+    Performs guided image filtering using cv.ximgproc.guidedFilter as a post-processing step to clean up the binary mask.
     """
-    p = _DEFAULTS.copy()
-    p.update(kwargs or {})
-    # Ensure structured model path is absolute and exists; otherwise fallback to composite edges
-    if p.get("edge_backend", "structured") == "structured":
-        mpath = p.get("structured_model", _STRUCTURED_MODEL_DEFAULT)
-        if not os.path.isabs(mpath):
-            mpath = os.path.join(_BASE_DIR, mpath)
-        if os.path.exists(mpath):
-            p["structured_model"] = mpath
-        else:
-            p["edge_backend"] = "composite"
-    
-    intermediates = {}
-
-    # Edge map for cleanup preservation
-    key = _edge_key(img_rgb_u8)
-    global _LAST_E_KEY, _LAST_E_VAL
-    if _LAST_E_KEY == key and _LAST_E_VAL is not None:
-        E = _LAST_E_VAL
-    else:
-        E = mgc.get_edge_map(
-            img_rgb_u8,
-            edge_backend=p["edge_backend"],
-            structured_model=p["structured_model"],
-            use_texture=bool(p["texture_edges"]),
-            dbg=None,
-            tag="edge_map.png"
-        )
-        _LAST_E_KEY, _LAST_E_VAL = key, E
-
-    y = (bin_mask01.astype(np.uint8) > 0).astype(np.uint8)
-
-    # Cleanup tiny bits while preserving strong edges
-    y = mgc.cleanup_mask(y, E, min_area_frac=float(p["cleanup_area_frac"]))
-
-    # Optional SLIC majority snap
-    if bool(p["superpixel_snap_flag"]):
-        if return_intermediates:
-            y, seg = mgc.superpixel_majority_snap(
-                img_rgb_u8, y,
-                region_size=int(p["sp_region_size"]),
-                compactness=float(p["sp_compactness"]),
-                tau=0.85,
-                return_segmentation=True
-            )
-            intermediates['superpixel_seg'] = seg
-        else:
-            y = mgc.superpixel_majority_snap(
-                img_rgb_u8, y,
-                region_size=int(p["sp_region_size"]),
-                compactness=float(p["sp_compactness"]),
-                tau=0.85
-            )
-
-    # Guided snapping to image edges
-    if bool(p["snap_guided"]):
-        guide = img_rgb_u8 if guide_img is None else guide_img
-        if return_intermediates:
-            y, soft = mgc.guided_snap(
-                guide, y,
-                r=int(p["snap_r"]),
-                eps=float(p["snap_eps"]),
-                thresh=float(p["snap_thresh"]),
-                return_soft=True
-            )
-            intermediates['guided_soft'] = soft
-        else:
-            y = mgc.guided_snap(
-                guide, y,
-                r=int(p["snap_r"]),
-                eps=float(p["snap_eps"]),
-                thresh=float(p["snap_thresh"]),
-                return_soft=False
-            )
+    y = mgc.guided_snap(img_rgb_u8, bin_mask01)
 
     final = (y > 0).astype(np.uint8)
-    
-    if return_intermediates:
-        return final, intermediates
     return final

@@ -315,13 +315,33 @@ def geodesic_distance(cost: np.ndarray, seeds: np.ndarray, eight_connected: bool
 
 # ---------- Seed expansion: adaptive + confidence ----------
 def local_contrast(gray: np.ndarray, r: int=3) -> np.ndarray:
-    # denoise a bit first
-    g = cv.GaussianBlur(gray, (0,0), 1.2)
-    mu = cv.blur(g, (2*r+1, 2*r+1)).astype(np.float32)
-    var = cv.blur((g.astype(np.float32) - mu)**2, (2*r+1, 2*r+1))
-    std = np.sqrt(var + 1e-6)
+    """
+    Reference: J. -S. Lee, "Digital Image Enhancement and Noise Filtering by Use of Local Statistics," in IEEE Transactions on Pattern Analysis and Machine Intelligence, vol. PAMI-2, no. 2, pp. 165-168, March 1980, doi: 10.1109/TPAMI.1980.4766994.
+    keywords: {Digital images;Digital filters;Statistics;Signal processing algorithms;Filtering algorithms;Additive noise;Image processing;Pixel;Image enhancement;Frequency domain analysis;Digital image enhancement;local statistics;noise filtering;real-time processing},
+    """
 
-    # robust scale to [0,1] using percentiles, then smooth again
+    g = cv.GaussianBlur(gray, (0,0), 1.2)
+    """
+    2. Local Mean Computation (Lee Eq. 1)
+    Logic: cv::blur calls cv::boxFilter(..., normalize=true).
+    Internally: 
+    - RowSumFilter/ColumnSumFilter compute the double summation: sum(sum(x))
+    - Logic: scale = 1.0 / (ksize.width * ksize.height)
+    - Result: mu = scale * sum(sum(g)) -> Arithmetic Mean
+    """
+    mu = cv.blur(g, (2*r+1, 2*r+1)).astype(np.float32)
+
+    """
+    3. Local Variance Computation (Lee Eq. 2)
+    Logic: Map-Reduce approach to the variance formula: Var = E[(X - E[X])^2]
+    Internally:
+    - (g - mu)**2 calculates the squared deviation (x - m)^2 per pixel.
+    - cv::blur sums these squared deviations and applies the 'scale' factor (1/Area).
+    - Result: var = (1/A) * sum(sum((x - m)^2)) -> Local Variance
+    """
+    var = cv.blur((g.astype(np.float32) - mu)**2, (2*r+1, 2*r+1))
+
+    std = np.sqrt(var + 1e-6)
     p5, p95 = np.percentile(std, [5, 95])
     std = (std - p5) / (p95 - p5 + 1e-6)
     std = np.clip(std, 0.0, 1.0)
@@ -329,38 +349,64 @@ def local_contrast(gray: np.ndarray, r: int=3) -> np.ndarray:
     return std
 
 def seeds_confidence_lab(img_rgb: np.ndarray, seeds_fg: np.ndarray, seeds_bg: np.ndarray,
-                         tau: float=0.75, return_score: bool=False):
-    """Add confident FG pixels using a simple Gaussian in Lab."""
+                        tau: float=0.75, return_score: bool=False):
+    """
+    PRE-GRABCUT COLOR LIKELIHOOD ESTIMATOR
+    Color Space: CIE Lab (Perceptually uniform; separates Luminance from Chrominance).
+    Model: Simplified Single-Component GMM (Maximum speed; prevents over-fragmentation 
+           of color clusters common in k=5 GMMs for small scribbles).
+    Inputs: img_rgb (Source), seeds_fg/bg (User scribbles), tau (Confidence threshold).
+    Outputs: Boolean mask of confident foreground pixels and/or raw probability scores.
+    """
+    # Safety check: If no foreground scribbles exist, return empty results
     if not np.any(seeds_fg):
         empty = np.zeros(img_rgb.shape[:2], dtype=bool)
         return (empty, empty.astype(np.float32)) if return_score else empty
+
+    # Convert to Lab and float32 for precise distance and variance calculations
     lab = cv.cvtColor(img_rgb, cv.COLOR_RGB2Lab).astype(np.float32)
+
+    # Identify pixel coordinates for user-defined foreground scribbles
     xs, ys = np.where(seeds_fg)
+    
+    # Extract the specific Lab color values under the foreground and background scribbles
     fg_samples = lab[xs, ys] if xs.size else lab[seeds_fg]
     bg_samples = lab[seeds_bg] if np.any(seeds_bg) else lab[~seeds_fg]
 
+    # Calculate the mean color (centroid) for both foreground and background distributions
     mu_f = fg_samples.mean(axis=0)
     mu_b = bg_samples.mean(axis=0) if bg_samples.size else mu_f + 1.0
 
+    # Calculate global variance (spread) for both distributions to determine color 'tightness'
     sf = (np.var(fg_samples, axis=0).mean() + 1e-3)
     sb = (np.var(bg_samples, axis=0).mean() + 1e-3) if bg_samples.size else sf*4
 
+    # Internal helper to calculate the log-likelihood of a pixel belonging to a Gaussian cluster
     def gauss_ll(x, mu, s):
         return -0.5 * np.sum((x - mu)**2, axis=2) / float(s)
 
+    # Compute log-likelihood maps for the entire image against the FG and BG models
     ll_f = gauss_ll(lab, mu_f, sf)
     ll_b = gauss_ll(lab, mu_b, sb)
-    # numerically stable sigmoid on ll_f - ll_b
+
+    # Calculate the log-ratio (delta) between clusters to determine which is more likely
     delta = (ll_f - ll_b).astype(np.float32)
-    # clamp to avoid overflow and underflow in exp
+
+    # Clip values to prevent exponential overflow during the sigmoid transformation
     delta = np.clip(delta, -60.0, 60.0)
-    # stable sigmoid, no overflow
+
+    # Transform the log-ratio into a normalized 0-1 probability map using a stable sigmoid
+    # Values > 0.5 favor foreground; < 0.5 favor background
     post = np.where(delta >= 0.0,
                     1.0 / (1.0 + np.exp(-delta)),
                     np.exp(delta) / (1.0 + np.exp(delta)))
-    # guard NaNs, just in case
+
+    # Clean up any potential mathematical errors (NaNs or Infs) to ensure array stability
     post = np.nan_to_num(post, nan=0.0, posinf=1.0, neginf=0.0).astype(np.float32)
+
+    # Threshold the probability map by 'tau' to create the final confident seed mask
     mask = (post >= float(tau))
+
     if return_score:
         return mask, post.astype(np.float32)
     return mask
@@ -368,27 +414,24 @@ def seeds_confidence_lab(img_rgb: np.ndarray, seeds_fg: np.ndarray, seeds_bg: np
 def expand_seeds(img_rgb: np.ndarray, E: np.ndarray, seeds_fg: np.ndarray, seeds_bg: np.ndarray,
                  r_geo: int, edge_alpha: float, adaptive: bool=True, conf_tau: float=0.75,
                  dbg: Optional[DebugRecorder]=None, save_geo: bool=False) -> Tuple[np.ndarray,np.ndarray]:
+    """
+    Ensures that the cost map is not dominated by a few outlier pixels
+    """
     E = E.astype(np.float32, copy=False)
     p95 = np.percentile(E, 95.0)
     if p95 > 1e-6:
         E = np.clip(E / p95, 0.0, 1.0)
+
+    """
+    Widens the capture range of the semantic boundaries
+    """
     E = cv.GaussianBlur(E, (0,0), 0.8)
 
-    if r_geo <= 0:
-        return seeds_bg.astype(bool), seeds_fg.astype(bool)
-
-    gray = cv.cvtColor(img_rgb, cv.COLOR_RGB2GRAY).astype(np.float32)/255.0
-    if adaptive:
-        lc = local_contrast(gray, r=3)
-        alpha_map = edge_alpha * (0.35 + 0.65 * lc)
-    else:
-        alpha_map = float(edge_alpha)
-
-    # edge-aware geodesic cost
-    E_soft = np.power(E, 0.8, dtype=np.float32)
-    cost  = 1.0 + (alpha_map.astype(np.float32) * E_soft)
-    cost  = np.clip(cost, 1.0, 1.0 + 2.5 * float(edge_alpha)).astype(np.float64, copy=False)
-    if dbg: dbg.save_gray("geo_cost.png", cost)
+    """
+    Create cost map prior to geodesic distance computation
+    """
+    E_soft = np.power(E, 0.8, dtype=np.float32) # Applies non-linear compression
+    cost = 1.0 + (float(edge_alpha) * E_soft)
 
     # Distances from FG and BG scribbles
     d_fg = geodesic_distance(cost, seeds_fg.astype(bool), True)
@@ -396,46 +439,44 @@ def expand_seeds(img_rgb: np.ndarray, E: np.ndarray, seeds_fg: np.ndarray, seeds
     geo_fg = d_fg <= float(r_geo)
     geo_bg = d_bg <= float(r_geo)
 
-    if dbg and save_geo:
-        dbg.save_gray("geo_dist_fg.png", d_fg)
-        dbg.save_gray("geo_dist_bg.png", d_bg)
-        dbg.save_gray("geo_mask_fg.png", geo_fg.astype(np.float32))
-        dbg.save_gray("geo_mask_bg.png", geo_bg.astype(np.float32))
-
     # Lab confidence (color-only)
-    conf_mask, conf_post = seeds_confidence_lab(img_rgb, seeds_fg, seeds_bg, tau=conf_tau, return_score=True)
-    if dbg:
-        dbg.save_gray("conf_posterior.png", conf_post)
-        dbg.save_gray("conf_mask.png", conf_mask.astype(np.float32))
+    conf_mask = seeds_confidence_lab(img_rgb, seeds_fg, seeds_bg, tau=conf_tau)
 
-    # -------- NEW: gate confidence by geometry + conflicts --------
-    # 1) Prefer the *nearest* scribble family.
+   # Preference for the nearest scribble family
     gate_near_fg = d_fg < d_bg
-    # 2) Keep confidence additions within ~geodesic halo.
-    gate_within = d_fg <= (1.25 * float(r_geo))   # modest slack over r_geo
-    # 3) Never flip BG scribbles or geodesically claimed BG.
+
+    """
+    Ensuring confidence additions remain within a restricted 'geodesic halo'.
+    This prevents similar colors in distant, unrelated parts of the image from 
+    being incorrectly flagged as foreground.
+    """
+    gate_within = d_fg <= (1.25 * float(r_geo))   
+
+    """
+    Protecting background integrity by preventing any foreground expansion 
+    from flipping pixels already claimed by background seeds or their 
+    geodesic expansion zone.
+    """
     no_bg_lock  = ~(seeds_bg.astype(bool) | geo_bg)
 
+    # Intersection of all spatial and logical constraints
     conf_mask_gated = conf_mask & gate_near_fg & gate_within & no_bg_lock
 
-    # Mild cleanup of confidence speckles
+    """
+    Morphological cleanup to remove isolated speckles and noise.
+    Using an 'Open' operation ensures only spatially coherent color 
+    clusters are promoted to seeds.
+    """
     conf_mask_gated = cv.morphologyEx(conf_mask_gated.astype(np.uint8), cv.MORPH_OPEN, _k_ellipse(3,3), iterations=1).astype(bool)
 
-    # FG takes geodesic OR gated confidence, but cannot override BG expansion
+    """
+    Final foreground seed synthesis combining geodesic reach and gated color confidence.
+    Explicitly subtracts any background-claimed regions to maintain strict seed separation.
+    """
     seeds_fg2 = (geo_fg | conf_mask_gated) & (~geo_bg) & (~seeds_bg.astype(bool))
 
-    # BG keeps its geodesic claim (and its original seeds)
+    # Preserving background geodesic claims and original user input
     seeds_bg2 = geo_bg | seeds_bg.astype(bool)
-
-    if dbg:
-        # Helpful for diagnosis
-        dbg.save_gray("conf_mask_gated.png", conf_mask_gated.astype(np.float32))
-        conflict = (seeds_fg2 & seeds_bg2).astype(np.float32)
-        dbg.save_gray("geo_conflict.png", conflict)  # should be all zeros
-        dbg.save_overlay("scribbles_fg.png", img_rgb, seeds_fg, color=(0,255,0), alpha=0.6)
-        dbg.save_overlay("scribbles_bg.png", img_rgb, seeds_bg, color=(255,0,0), alpha=0.6)
-        dbg.save_overlay("expanded_fg.png", img_rgb, seeds_fg2, color=(0,255,0), alpha=0.6)
-        dbg.save_overlay("expanded_bg.png", img_rgb, seeds_bg2, color=(255,0,0), alpha=0.6)
 
     return seeds_bg2, seeds_fg2
 
@@ -610,18 +651,26 @@ def superpixel_majority_snap(img_rgb: np.ndarray, mask: np.ndarray, region_size:
         return out, seg
     return out
 
-def guided_snap(img_rgb: np.ndarray, mask: np.ndarray, r: int=4, eps: float=1e-3, thresh: float=0.5, return_soft: bool=False):
-    fg = (mask>0).astype(np.uint8)
-    bg = 1 - fg
-    dist_fg = cv.distanceTransform(bg, cv.DIST_L2, 3)
-    dist_bg = cv.distanceTransform(fg, cv.DIST_L2, 3)
-    signed = dist_bg - dist_fg
-    soft = 0.5 + 0.5 * np.clip(signed/float(max(1, r*2)), -1.0, 1.0)
-    q = guided_filter_color(img_rgb, soft.astype(np.float32), r=r, eps=eps)
-    out = (q >= float(thresh)).astype(np.uint8)
-    if return_soft:
-        return out, q
-    return out
+def guided_snap(img_rgb: np.ndarray, bin_mask: np.ndarray):
+    """
+    Refines the GrabCut binary mask using the original image as a guide.
+    Uses defaults from He et al. (2010) as referenced by Zhang & Chai (2020).
+    """
+    # Standard defaults for mask refinement
+    # Radius (r): 4 (covers small spikes/sags)
+    # Epsilon (eps): 1e-6 (very small to ensure tight edge snapping)
+    r = 4
+    eps = 1e-6
+    
+    # Guide (I) must be the RGB image; Input (p) is the 0/1 float mask
+    guide = img_rgb.astype(np.float32)
+    src = bin_mask.astype(np.float32)
+    
+    # Apply Official Guided Filter
+    refined_soft = cv.ximgproc.guidedFilter(guide=guide, src=src, radius=r, eps=eps)
+    
+    # Threshold to return to binary
+    return (refined_soft >= 0.5).astype(np.uint8)
 
 # ---------- Multi-class wrapper ----------
 def run_one_vs_rest(img_rgb: np.ndarray,
