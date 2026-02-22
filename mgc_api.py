@@ -104,13 +104,9 @@ def mgc_refine_seeds(img_rgb_u8: np.ndarray,
     if _LAST_E_KEY == key and _LAST_E_VAL is not None:
         E = _LAST_E_VAL
     else:
-        E = mgc.get_edge_map(
+        E = mgc.edges_structured_forests(
             img_rgb_u8,
-            edge_backend=p["edge_backend"],
             structured_model=p["structured_model"],
-            use_texture=bool(p["texture_edges"]),
-            dbg=None,
-            tag="edge_map.png"
         )
         _LAST_E_KEY, _LAST_E_VAL = key, E
 

@@ -798,8 +798,6 @@ def parse_args(argv=None):
                     help="Intra image trio parallelization. auto, parallelize trio when not running batch parallel, off in batch. on, always parallelize. off, never parallelize.")
     ap.add_argument("--ensemble_trio_workers", type=int, default=0,
                     help="Workers for intra image trio parallelization with threads, 0 means len(trio)")
-
-
     ap.add_argument("--ensemble_label_tie_strategy", type=str, default="first",
                     choices=["first", "second", "third"],
                     help="When indexed labels from three color spaces all disagree at a pixel, choose first, second, or third.")

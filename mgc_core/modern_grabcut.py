@@ -215,20 +215,14 @@ def edges_structured_forests(img_rgb: np.ndarray, model_path: Optional[str]) -> 
 
     Model Source: https://github.com/opencv/opencv_extra/tree/master/testdata/cv/ximgproc
     """
-    bgr = cv.cvtColor(img_rgb, cv.COLOR_RGB2BGR).astype(np.float32) / 255.0
+    rgb = cv.cvtColor(img_rgb, cv.COLOR_RGB2BGR).astype(np.float32) / 255.0
     sed = _get_sed(model_path)
-    E = sed.detectEdges(bgr).astype(np.float32)
+    E = sed.detectEdges(rgb).astype(np.float32)
     O = sed.computeOrientation(E).astype(np.float32)
     if hasattr(sed, "edgesNms"):
         E = sed.edgesNms(E, O)
     
-    """
-    Performs a Global-Max Normalization
-    Find strongest edge in the entire image m and dividing every pixel by it
-    Transforms the edge map into a probability/cost map
-    """
-    m = float(E.max()) + 1e-6 ### 1e-6 to avoid divide-by-zero
-    return (E / m).astype(np.float32, copy=False)
+    return (E).astype(np.float32, copy=False)
 
 
 def get_edge_map(img_rgb: np.ndarray,
@@ -237,15 +231,8 @@ def get_edge_map(img_rgb: np.ndarray,
                  use_texture: bool = False,
                  dbg: Optional[DebugRecorder]=None,
                  tag: str="00_edge_map.png") -> np.ndarray:
-    backend = edge_backend.lower()
-    if backend in ("structured", "auto"):
-        E = edges_structured_forests(img_rgb, structured_model)
-    elif backend == "composite":
-        E = edges_composite(img_rgb, use_texture=use_texture)
-    else:
-        raise ValueError(f"Unknown edge backend: {edge_backend}")
-    if dbg: dbg.save_gray(tag, E)
-    return E
+    
+    return edges_structured_forests(img_rgb, structured_model)
 
 # ---------- Guided filter (edge-aware smoothing for snapping) ----------
 def _boxfilter(img: np.ndarray, r: int) -> np.ndarray:
