@@ -222,7 +222,13 @@ def edges_structured_forests(img_rgb: np.ndarray, model_path: Optional[str]) -> 
     if hasattr(sed, "edgesNms"):
         E = sed.edgesNms(E, O)
     
-    return (E).astype(np.float32, copy=False)
+    """
+    Performs a Global-Max Normalization
+    Find strongest edge in the entire image m and dividing every pixel by it
+    Transforms the edge map into a probability/cost map
+    """
+    m = float(E.max()) + 1e-6 ### 1e-6 to avoid divide-by-zero
+    return (E / m).astype(np.float32, copy=False)
 
 
 def get_edge_map(img_rgb: np.ndarray,
