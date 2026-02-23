@@ -53,31 +53,59 @@ def save_indexed_png(mask_2d: np.ndarray, path: str) -> None:
 
 # --- majority vote on indexed masks (2D uint8) ---
 def majority_vote_indexed(a, b, c, tie_pref=0):
-    """Majority vote over three 2D uint8 indexed masks.
-    tie_pref, 0 choose first, 1 choose second, 2 choose third, for three way ties."""
+    """
+    Algorithm 1: Final Ensemble Majority Voting.
+    Fuses three multi-class segmentation results by finding the consensus 
+    label for each pixel.
+    """
     if a.shape != b.shape or a.shape != c.shape:
         raise ValueError(f"Shape mismatch in majority_vote_indexed, got {a.shape}, {b.shape}, {c.shape}")
+    
+    # Ensure all inputs are in the correct unsigned 8-bit integer format for VOC labels
     a = a.astype("uint8", copy=False)
     b = b.astype("uint8", copy=False)
     c = c.astype("uint8", copy=False)
-    eq_ab = (a == b)
-    eq_ac = (a == c)
-    eq_bc = (b == c)
+    
+    """
+    Identify consensus pairs.
+    A label wins the 'Majority Vote' if at least two out of three masks agree on it.
+    """
+    eq_ab = (a == b) # Class assignment matches between Mask A and Mask B
+    eq_ac = (a == c) # Class assignment matches between Mask A and Mask C
+    eq_bc = (b == c) # Class assignment matches between Mask B and Mask C
+    
+    # Initialize output array with the first mask's values as a baseline
     out = a.copy()
+    
+    # If A and B agree, their shared label is the majority winner
     mask_ab = eq_ab
     out[mask_ab] = a[mask_ab]
+    
+    # If A and C agree (and it wasn't already settled by A and B), A/C is the winner
     mask_ac = eq_ac & (~mask_ab)
     out[mask_ac] = a[mask_ac]
+    
+    # If B and C agree (and it wasn't settled by A), B/C is the winner
     mask_bc = eq_bc & (~(mask_ab | mask_ac))
     out[mask_bc] = b[mask_bc]
+    
+    """
+    Algorithm 1, Line 28: Handling 'Three-way Ties'.
+    If all three masks predict a different label, a majority cannot be found.
+    We resolve this using the 'tie_pref' (Tie Preference) parameter.
+    """
     mask_tie = ~(mask_ab | mask_ac | mask_bc)
+    
     if mask_tie.any():
+        # Fallback to the preferred source mask when no consensus exists
         if tie_pref == 0:
-            out[mask_tie] = a[mask_tie]
+            out[mask_tie] = a[mask_tie] # Prefer Mask A
         elif tie_pref == 1:
-            out[mask_tie] = b[mask_tie]
+            out[mask_tie] = b[mask_tie] # Prefer Mask B
         else:
-            out[mask_tie] = c[mask_tie]
+            out[mask_tie] = c[mask_tie] # Prefer Mask C
+            
+    # Return the final consensus-based multiclass segmentation map
     return out
 
 
