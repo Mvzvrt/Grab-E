@@ -10,45 +10,29 @@ from __future__ import annotations
 
 import argparse
 import json
-import warnings
 from pathlib import Path
 from time import perf_counter
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, List, Tuple
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 import os
 
 import numpy as np
 import cv2 as cv
-from PIL import Image
 from tqdm import tqdm
 
 import sys, pathlib
 sys.path.append(str(pathlib.Path(__file__).parent / "mgc_core"))
 from mgc_api import mgc_refine_seeds, mgc_post_smooth_mask
 
-# ---------- constants / palette ----------
-NUM_VOC_CLASSES = 21
-_IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
-
-
-def voc_palette() -> np.ndarray:
-    pal = np.zeros((256, 3), dtype=np.uint8)
-    for i in range(256):
-        lab = i
-        for j in range(8):
-            pal[i, 0] |= (((lab >> 0) & 1) << (7 - j))
-            pal[i, 1] |= (((lab >> 1) & 1) << (7 - j))
-            pal[i, 2] |= (((lab >> 2) & 1) << (7 - j))
-            lab >>= 3
-    return pal
-
-def save_indexed_png(mask_2d: np.ndarray, path: str) -> None:
-    img = Image.fromarray(mask_2d.astype(np.uint8))
-    img = img.convert("P")
-    img.putpalette(voc_palette().ravel())
-    img.save(path)
-
-# ---------- I/O ----------
+# I/O utilities
+from io_utils import (
+    NUM_VOC_CLASSES,
+    save_indexed_png,
+    load_img,
+    load_anns,
+    find_image,
+    base_from_ann_name,
+)
 
 # --- majority vote on indexed masks (2D uint8) ---
 def majority_vote_indexed(a, b, c, tie_pref=0):
@@ -106,54 +90,6 @@ def majority_vote_indexed(a, b, c, tie_pref=0):
             
     # Return the final consensus-based multiclass segmentation map
     return out
-
-
-def load_img(p: Path) -> np.ndarray:
-    """Load RGB uint8 image.
-    Uses PIL conversion to RGB then numpy array view.
-    """
-    return np.asarray(Image.open(p).convert("RGB"), dtype=np.uint8)
-
-
-def load_anns(p: Path) -> np.ndarray:
-    """Load annotations as int32 array.
-    Accepts .npy, .png, .bmp, .tif, .tiff. Uses memory-mapped loading for .npy.
-    Includes bounds checking for expected range [0, NUM_VOC_CLASSES].
-    """
-    ext = p.suffix.lower()
-    if ext == ".npy":
-        # Reads the .npy file as a memory-mapped array to avoid loading the entire file into memory at once.
-        a = np.load(p, mmap_mode="r")
-        
-        # Converts the memory-mapped array to a regular NumPy array of type int32. Not 
-        a = np.asarray(a, dtype=np.int32)
-    elif ext in (".png", ".bmp", ".tif", ".tiff"):
-        a = np.asarray(Image.open(p).convert("P"), dtype=np.int32)
-    else:
-        raise ValueError(f"Unsupported annotation format: {ext}")
-
-    a_min = int(a.min()) if a.size else 0
-    a_max = int(a.max()) if a.size else 0
-    if a_min < 0 or a_max > NUM_VOC_CLASSES:
-        warnings.warn(
-            f"Annotation values out of expected range [0, {NUM_VOC_CLASSES}]: [{a_min}, {a_max}]"
-        )
-    return a
-
-
-def find_image(base: str, images_dir: Path) -> Optional[Path]:
-    for e in _IMG_EXTS:
-        q = images_dir / f"{base}{e}"
-        if q.exists():
-            return q
-    return None
-
-
-def base_from_ann_name(name: str) -> str:
-    for sfx in ("_anns_scribbleids", "_scribbleids", "_anns"):
-        if name.endswith(sfx):
-            return name[: -len(sfx)]
-    return name
 
 
 # ---------- color-space helpers moved to color_space.py ----------
@@ -514,7 +450,7 @@ def parse_args(argv=None):
     
     # Parallel batch processing control
     ap.add_argument("--parallel", action="store_true",
-                    help="Enable batch parallel processing of images (single color space mode only).")
+                    help="Enable batch parallel processing of images (single color space mode only). Uses os.cpu_count() workers by default.")
 
     return ap.parse_args(argv)
 
