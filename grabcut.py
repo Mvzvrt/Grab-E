@@ -887,40 +887,44 @@ def parse_args(argv=None):
                     help="Enable majority voting ensemble across a trio of color spaces for binary masks prior to class assignment.")
     ap.add_argument("--ensemble_trio", type=str, default="ruderman_lab,oklab,jzczhz",
                     help="Comma separated trio for majority voting, default ruderman_lab,oklab,jzczhz.")
+    ### Must be default
     ap.add_argument("--ensemble_trio_parallel", type=str, default="auto", choices=["auto", "on", "off"],
                     help="Intra image trio parallelization. auto, parallelize trio when not running batch parallel, off in batch. on, always parallelize. off, never parallelize.")
+    ### Must be default
     ap.add_argument("--ensemble_trio_workers", type=int, default=0,
                     help="Workers for intra image trio parallelization with threads, 0 means len(trio)")
+    
+    ### Must be default
     ap.add_argument("--ensemble_label_tie_strategy", type=str, default="first",
                     choices=["first", "second", "third"],
                     help="When indexed labels from three color spaces all disagree at a pixel, choose first, second, or third.")
 
+    ### Must REMOVE
     ap.add_argument("--emit_models", action="store_true",
                     help="When set, save per class bgdModel and fgdModel NPZ files for the single space path.")
     ap.add_argument("--models_dir", type=str, default="",
                     help="Optional output directory for NPZ model files, defaults to output_dir slash models")
-
     ap.add_argument("--emit_binary_masks", action="store_true",
                     help="When set, save per class binary masks (post-refinement) as indexed PNG files for the single space path.")
     ap.add_argument("--binary_masks_dir", type=str, default="",
                     help="Optional output directory for binary mask PNG files, defaults to output_dir slash binary_masks")
-
     ap.add_argument("--emit_pre_refinement_masks", action="store_true",
                     help="When set, save per class pre-refinement masks (raw GrabCut output before superpixel refinement) for comparison.")
     ap.add_argument("--pre_refinement_masks_dir", type=str, default="",
                     help="Optional output directory for pre-refinement mask PNG files, defaults to output_dir slash pre_refinement_masks")
-
     ap.add_argument("--emit_superpixels", action="store_true",
                     help="When set, save per class superpixel segmentations from the superpixel boundary snapping phase.")
     ap.add_argument("--superpixels_dir", type=str, default="",
                     help="Optional output directory for superpixel segmentation files, defaults to output_dir slash superpixels")
-
     ap.add_argument("--emit_guided_soft", action="store_true",
                     help="When set, save per class soft masks from the guided filtering phase before thresholding.")
     ap.add_argument("--guided_soft_dir", type=str, default="",
                     help="Optional output directory for guided soft mask files, defaults to output_dir slash guided_soft")
 
+    ### Keep as argument
     ap.add_argument("--parallel", action="store_true", help="Enable parallel processing of images")
+
+    ### Should be default
     ap.add_argument("--max_workers", type=int, default=0, help="Workers for parallel mode, 0 picks os.cpu_count()")
 
     return ap.parse_args(argv)
