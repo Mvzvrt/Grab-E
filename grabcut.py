@@ -1,112 +1,166 @@
 # Filename: grabcut.py
 # -*- coding: utf-8 -*-
+"""GrabCut batch CLI for one-vs-rest segmentation with optional ensemble.
 
-"""GrabCut batch CLI for one vs rest segmentation with optional ensemble over three color spaces.
-This version moves majority voting from per-class binary masks to voting over final indexed masks.
-Indexed masks now follow app/GT convention: 0 background, foreground labels equal class IDs (2..20 -> 2..20).
-Minimal flags: --images_dir, --anns_dir, --output_dir. To enable ensemble, add --enable_majority_vote."""
+This version moves majority voting from per-class binary masks to voting over
+final indexed masks. Indexed masks follow app/GT convention: 0 background,
+foreground labels equal class IDs (2..20 -> 2..20).
 
+Minimal flags:
+    --images_dir, --anns_dir, --output_dir
+
+To enable ensemble:
+    --enable_majority_vote
+"""
 from __future__ import annotations
 
+# Standard library imports
 import argparse
 import json
+import os
+import pathlib
+import sys
+from concurrent.futures import as_completed
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import perf_counter
-from typing import Dict, List, Tuple
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-import os
+from typing import Dict
+from typing import List
 
-import numpy as np
+# Third-party imports
 import cv2 as cv
+import numpy as np
 from tqdm import tqdm
 
-import sys, pathlib
+# Local application imports
+# NOTE: Extend sys.path to include mgc_core subpackage before local imports.
 sys.path.append(str(pathlib.Path(__file__).parent / "mgc_core"))
-from mgc_api import mgc_refine_seeds, mgc_post_smooth_mask
 
-# I/O utilities
-from io_utils import (
-    NUM_VOC_CLASSES,
-    save_indexed_png,
-    load_img,
-    load_anns,
-    find_image,
-    base_from_ann_name,
-)
+from color_space import convert_color_space  # type: ignore
+from io_utils import base_from_ann_name
+from io_utils import find_image
+from io_utils import load_anns
+from io_utils import load_img
+from io_utils import NUM_VOC_CLASSES
+from io_utils import save_indexed_png
+from mgc_api import mgc_post_smooth_mask
+from mgc_api import mgc_refine_seeds
 
-# --- majority vote on indexed masks (2D uint8) ---
-def majority_vote_indexed(a, b, c, tie_pref=0):
-    """
-    Algorithm 1: Final Ensemble Majority Voting.
-    Fuses three multi-class segmentation results by finding the consensus 
-    label for each pixel.
+# ---------------------------------------------------------------------------
+# Module-level constants
+# ---------------------------------------------------------------------------
+GRABCUT_ITERATIONS: int = 5
+"""Number of GrabCut graph-cut iterations per class."""
+
+TIE_BREAK_INFINITY: float = 1e9
+"""Large penalty distance for pixels not claimed by a class during tie-breaking."""
+
+NO_SEED_PENALTY: float = 1e6
+"""Penalty distance for classes with no user-drawn seeds."""
+
+def majority_vote_indexed(
+    a: np.ndarray,
+    b: np.ndarray,
+    c: np.ndarray,
+    tie_pref: int = 0,
+) -> np.ndarray:
+    """Fuse three multi-class segmentation results via pixel-wise majority voting.
+
+    Implements Algorithm 1: Final Ensemble Majority Voting. For each pixel, the
+    label agreed upon by at least two of the three input masks is selected.
+
+    Args:
+        a: First indexed segmentation mask, shape (H, W), dtype uint8.
+        b: Second indexed segmentation mask, shape (H, W), dtype uint8.
+        c: Third indexed segmentation mask, shape (H, W), dtype uint8.
+        tie_pref: Index of the preferred mask (0, 1, or 2) used when all three
+            masks disagree (three-way tie). Defaults to 0 (prefer mask ``a``).
+
+    Returns:
+        Consensus segmentation mask with the same shape as inputs, dtype uint8.
+
+    Raises:
+        ValueError: If input mask shapes do not match.
     """
     if a.shape != b.shape or a.shape != c.shape:
-        raise ValueError(f"Shape mismatch in majority_vote_indexed, got {a.shape}, {b.shape}, {c.shape}")
-    
-    # Ensure all inputs are in the correct unsigned 8-bit integer format for VOC labels
+        raise ValueError(
+            f"Shape mismatch in majority_vote_indexed: "
+            f"{a.shape}, {b.shape}, {c.shape}"
+        )
+
+    # Ensure all inputs are uint8 for VOC-style labels.
     a = a.astype("uint8", copy=False)
     b = b.astype("uint8", copy=False)
     c = c.astype("uint8", copy=False)
-    
-    """
-    Identify consensus pairs.
-    A label wins the 'Majority Vote' if at least two out of three masks agree on it.
-    """
-    eq_ab = (a == b) # Class assignment matches between Mask A and Mask B
-    eq_ac = (a == c) # Class assignment matches between Mask A and Mask C
-    eq_bc = (b == c) # Class assignment matches between Mask B and Mask C
-    
-    # Initialize output array with the first mask's values as a baseline
+
+    # Identify consensus pairs. A label wins if at least two masks agree.
+    eq_ab = a == b  # Mask A matches Mask B
+    eq_ac = a == c  # Mask A matches Mask C
+    eq_bc = b == c  # Mask B matches Mask C
+
+    # Initialize output with first mask values as baseline.
     out = a.copy()
-    
-    # If A and B agree, their shared label is the majority winner
+
+    # If A and B agree, their shared label is the majority winner.
     mask_ab = eq_ab
     out[mask_ab] = a[mask_ab]
-    
-    # If A and C agree (and it wasn't already settled by A and B), A/C is the winner
+
+    # If A and C agree (not already settled by A-B), A/C wins.
     mask_ac = eq_ac & (~mask_ab)
     out[mask_ac] = a[mask_ac]
-    
-    # If B and C agree (and it wasn't settled by A), B/C is the winner
+
+    # If B and C agree (not settled by A), B/C wins.
     mask_bc = eq_bc & (~(mask_ab | mask_ac))
     out[mask_bc] = b[mask_bc]
-    
-    """
-    Algorithm 1, Line 28: Handling 'Three-way Ties'.
-    If all three masks predict a different label, a majority cannot be found.
-    We resolve this using the 'tie_pref' (Tie Preference) parameter.
-    """
+
+    # Algorithm 1, Line 28: Handle three-way ties.
+    # If all three masks predict different labels, fall back to tie_pref.
     mask_tie = ~(mask_ab | mask_ac | mask_bc)
-    
+
     if mask_tie.any():
-        # Fallback to the preferred source mask when no consensus exists
         if tie_pref == 0:
-            out[mask_tie] = a[mask_tie] # Prefer Mask A
+            out[mask_tie] = a[mask_tie]
         elif tie_pref == 1:
-            out[mask_tie] = b[mask_tie] # Prefer Mask B
+            out[mask_tie] = b[mask_tie]
         else:
-            out[mask_tie] = c[mask_tie] # Prefer Mask C
-            
-    # Return the final consensus-based multiclass segmentation map
+            out[mask_tie] = c[mask_tie]
+
     return out
 
 
-# ---------- color-space helpers moved to color_space.py ----------
-from color_space import convert_color_space  # type: ignore
+# ---------------------------------------------------------------------------
+# OpenCV GrabCut, single call
+# ---------------------------------------------------------------------------
 
 
-# ---------- OpenCV GrabCut, single call ----------
+def opencv_grabcut_once(
+    img_feats_u8: np.ndarray,
+    seeds_bg: np.ndarray,
+    seeds_fg: np.ndarray,
+) -> np.ndarray:
+    """Execute a single OpenCV GrabCut segmentation pass.
 
-def opencv_grabcut_once(img_feats_u8: np.ndarray,
-                        seeds_bg: np.ndarray,
-                        seeds_fg: np.ndarray,
-                        return_models: bool = False,
-                        return_mask_states: bool = False
-                        ) -> np.ndarray | Tuple[np.ndarray, np.ndarray, np.ndarray] | Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    
-    """
-    Input error handling. Ensures image features are uint8 and have three channels, and that seed masks match image dimensions. If no foreground seeds are provided, returns an empty mask immediately.
+    Performs graph-cut based foreground/background segmentation using user-
+    provided seed masks. Follows the GC_INIT_WITH_MASK workflow.
+
+    Source:
+        https://vovkos.github.io/doxyrest-showcase/opencv/sphinx_rtd_theme/
+        page_tutorial_py_grabcut.html
+
+    Args:
+        img_feats_u8: Input image features, shape (H, W, 3), dtype uint8.
+            Typically an RGB or color-converted image.
+        seeds_bg: Boolean mask indicating definite background pixels.
+        seeds_fg: Boolean mask indicating definite foreground pixels.
+
+    Returns:
+        Binary segmentation mask, shape (H, W), dtype uint8. Pixels labeled
+        1 are foreground, 0 are background.
+
+    Raises:
+        TypeError: If ``img_feats_u8`` is not dtype uint8.
+        ValueError: If image is not HxWx3 or seed shapes do not match image.
     """
     if img_feats_u8.dtype != np.uint8:
         raise TypeError(
@@ -115,282 +169,310 @@ def opencv_grabcut_once(img_feats_u8: np.ndarray,
         )
 
     if img_feats_u8.ndim != 3 or img_feats_u8.shape[2] != 3:
-        raise ValueError(f"Expected HxWx3 topology, got shape {img_feats_u8.shape}")
-
-    H, W, _ = img_feats_u8.shape
-
-    if seeds_bg.shape != (H, W) or seeds_fg.shape != (H, W):
         raise ValueError(
-            f"Seed masks must match image size, got {seeds_bg.shape} and {seeds_fg.shape}, expected {(H, W)}"
+            f"Expected HxWx3 topology, got shape {img_feats_u8.shape}"
         )
 
+    h, w, _ = img_feats_u8.shape
+
+    if seeds_bg.shape != (h, w) or seeds_fg.shape != (h, w):
+        raise ValueError(
+            f"Seed masks must match image size. "
+            f"Got {seeds_bg.shape} and {seeds_fg.shape}, expected {(h, w)}."
+        )
+
+    # Return empty mask if no foreground seeds provided.
     if not np.any(seeds_fg):
-        empty = np.zeros((H, W), dtype=np.uint8)
-        return empty
+        return np.zeros((h, w), dtype=np.uint8)
 
-    """
-    Initialize annotation mask with OpenCV's expected labels: GC_BGD=0, GC_FGD=1, GC_PR_BGD=2, GC_PR_FGD=3. In this case, we fill the annotation mask with 2 (probable background) and then set the firm background seeds to 0 and firm foreground seeds to 1.
-
-    Follows the same step by step process as seen in the demo below with GC_INIT_WITH_MASK:
-    Source: https://vovkos.github.io/doxyrest-showcase/opencv/sphinx_rtd_theme/page_tutorial_py_grabcut.html
-    """
-    mask = np.full((H, W), cv.GC_PR_BGD, dtype=np.uint8)
+    # Initialize annotation mask with OpenCV's expected labels:
+    # GC_BGD=0, GC_FGD=1, GC_PR_BGD=2, GC_PR_FGD=3.
+    # Fill with probable background, then apply firm seeds.
+    mask = np.full((h, w), cv.GC_PR_BGD, dtype=np.uint8)
     mask[seeds_bg] = cv.GC_BGD
     mask[seeds_fg] = cv.GC_FGD
 
-    bgdModel = np.zeros((1, 65), np.float64)
-    fgdModel = np.zeros((1, 65), np.float64)
+    bgd_model = np.zeros((1, 65), np.float64)
+    fgd_model = np.zeros((1, 65), np.float64)
 
-    cv.grabCut(img_feats_u8, mask, None, bgdModel, fgdModel, 5, cv.GC_INIT_WITH_MASK)
+    cv.grabCut(
+        img_feats_u8,
+        mask,
+        None,
+        bgd_model,
+        fgd_model,
+        GRABCUT_ITERATIONS,
+        cv.GC_INIT_WITH_MASK,
+    )
 
-    """
-    Create the binary mask by asking whether the resulting mask is either GC_FGD (1) or GC_PR_FGD (3), which we treat as foreground, and everything else as background.
-    """
-    bin_mask = np.where((mask == cv.GC_FGD) | (mask == cv.GC_PR_FGD), 1, 0).astype(np.uint8)
+    # Extract binary mask: foreground = GC_FGD or GC_PR_FGD.
+    bin_mask = np.where(
+        (mask == cv.GC_FGD) | (mask == cv.GC_PR_FGD), 1, 0
+    ).astype(np.uint8)
     return bin_mask
 
 
-# ---------- multi class wrapper, one vs rest ----------
+# ---------------------------------------------------------------------------
+# Multi-class wrapper: one-vs-rest segmentation
+# ---------------------------------------------------------------------------
 
-def run_one_vs_rest(img_feats_u8: np.ndarray,
-                    img_rgb_u8: np.ndarray,
-                    anns: np.ndarray) -> np.ndarray:
-    """
-    For each present class c > 1:
-      FG seeds = anns == c
-      BG seeds = anns == 1 or anns > 1 and not equal to c
-    Combine binary masks into a single index map where:
-      output 0 = background, output 1..20 = foreground classes, map c -> c - 1.
 
-    Returns the final indexed mask.
+def run_one_vs_rest(
+    img_feats_u8: np.ndarray,
+    img_rgb_u8: np.ndarray,
+    anns: np.ndarray,
+) -> np.ndarray:
+    """Perform one-vs-rest GrabCut segmentation for all annotated classes.
+
+    For each foreground class c > 1:
+        - FG seeds = pixels where ``anns == c``
+        - BG seeds = pixels where ``anns == 1`` OR other foreground classes
+
+    Binary masks are combined into a single indexed segmentation map.
+
+    Args:
+        img_feats_u8: Color-space converted image features, shape (H, W, 3),
+            dtype uint8.
+        img_rgb_u8: Original RGB image, shape (H, W, 3), dtype uint8.
+            Used for seed refinement.
+        anns: Annotation mask with class labels. 0 = unknown, 1 = background,
+            2..K = foreground classes.
+
+    Returns:
+        Indexed segmentation mask, shape (H, W), dtype uint8. Background is 0,
+        foreground classes are mapped to ``class_id - 1``.
     """
-    H, W = anns.shape
+    h, w = anns.shape
     classes = sorted([int(x) for x in np.unique(anns) if x > 1])
+
     if not classes:
-        return np.zeros((H, W), dtype=np.uint8)
+        return np.zeros((h, w), dtype=np.uint8)
 
     fg_masks: Dict[int, np.ndarray] = {}
 
     for c in classes:
-        """
-        Select the seeds for the current class as the only foreground annotation and
-        the original background seeds plus the other foreground seeds as the background annotation
-        """
-        seeds_fg = (anns == c)
+        # Select seeds: current class as FG, background + other FG classes as BG.
+        seeds_fg = anns == c
         seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
 
+        # Refine seeds via geodesic distance and GMM LAB confidence.
+        seeds_fg, seeds_bg = mgc_refine_seeds(
+            img_rgb_u8,
+            seeds_bg=seeds_bg,
+            seeds_fg=seeds_fg,
+            conf_img=img_feats_u8,
+        )
 
-        """
-        Performs seed expansio via geodesic distance calculation and simplified GMM LAB confidence
-        """
-        seeds_fg, seeds_bg = mgc_refine_seeds(img_rgb_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg, conf_img=img_feats_u8)
-        
-        """
-        Passes color converted image and expanded seeds for GrabCut run
-        """
-        y = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg)  # type: ignore
-        
-        """
-        Performs post-refinement using Guided Image Filtering
-        """
+        # Run GrabCut with expanded seeds.
+        y = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg)
+
+        # Post-refinement using Guided Image Filtering.
         y = mgc_post_smooth_mask(img_rgb_u8, y)
-        fg_masks[c] = y # binary 0 or 1
+        fg_masks[c] = y  # Binary mask: 0 or 1
+
+    # Assemble final multiclass map.
+    return _combine_fg_masks_to_final(fg_masks, anns)
 
 
+def _combine_fg_masks_to_final(
+    fg_masks: Dict[int, np.ndarray],
+    anns: np.ndarray,
+) -> np.ndarray:
+    """Aggregate binary one-vs-rest masks into a single multiclass segmentation map.
+
+    Implements Algorithm 1: Final Label Fusion via Majority Voting. Maintains
+    O(K) linear complexity where K is the number of classes.
+
+    When multiple classes claim the same pixel (overlap), ties are resolved using
+    spatial distance to user-drawn scribbles as a confidence metric.
+
+    Source:
+        Hu YC, Mageras G, Grossberg M. Multi-class medical image segmentation
+        using one-vs-rest graph cuts and majority voting. J Med Imaging
+        (Bellingham). 2021;8(3):034003. doi:10.1117/1.JMI.8.3.034003
+
+    EXTENSION/DEVIATION from Algorithm 1, Line 28:
+        The paper suggests using a regional classifier (Random Forest) to provide
+        a probability p(alpha|xi) as a tie-breaker. Our architecture extends this
+        logic for Interactive GrabCut by using spatial distance to user scribbles
+        as the confidence metric instead of a secondary classifier.
+
+    Args:
+        fg_masks: Dictionary mapping class IDs to binary foreground masks.
+            Each mask is shape (H, W) with values 0 or 1.
+        anns: Original annotation mask used to extract user-drawn seed locations
+            for distance-based tie-breaking.
+
+    Returns:
+        Indexed segmentation mask, shape (H, W), dtype uint8. Labels are
+        zero-indexed (class c -> c - 1).
     """
-    Performs multiclass assembly
-    """
-    final = _combine_fg_masks_to_final(fg_masks, anns)
-    return final
-
-
-def _combine_fg_masks_to_final(fg_masks: Dict[int, np.ndarray],
-                               anns: np.ndarray) -> np.ndarray:
-    """
-    Algorithm 1: Final Label Fusion via Majority Voting.
-    This function aggregates multiple binary s-t cuts into a single multiclass 
-    segmentation map, maintaining the O(K) linear complexity described in the paper.
-
-    Source: Hu YC, Mageras G, Grossberg M. Multi-class medical image segmentation using one-vs-rest graph cuts and majority voting. J Med Imaging (Bellingham). 2021;8(3):034003. doi:10.1117/1.JMI.8.3.034003
-    """
-    
-    # Algorithm 1, Line 1: Iterate through the set of labels L
+    # Algorithm 1, Line 1: Iterate through the set of labels L.
     classes = sorted(fg_masks.keys())
     if not classes:
-        H, W = anns.shape
-        return np.zeros((H, W), dtype=np.uint8)
+        h, w = anns.shape
+        return np.zeros((h, w), dtype=np.uint8)
 
-    H, W = anns.shape
-    
-    """
-    Algorithm 1, Line 22: Majority votes.
-    Collect individual binary segmentation results into a 3D volume to evaluate 
-    class assignments per pixel.
-    """
+    h, w = anns.shape
+
+    # Algorithm 1, Line 22: Majority votes. Stack binary masks into 3D volume.
     stack = np.stack([fg_masks[c] for c in classes], axis=2)
-    
-    # Algorithm 1, Line 22: Count the number of labels assigned to each pixel (Ta)
+
+    # Count labels assigned per pixel (Ta).
     overlap_count = stack.sum(axis=2)
-    
-    # Check if any pixel has been claimed by more than one binary s-t cut
+
+    # Check if any pixel claimed by more than one class.
     any_overlap = (overlap_count > 1).any()
 
-    # Algorithm 1, Line 21: Initialize the final multi-class segmentation map S
-    final = np.zeros((H, W), dtype=np.uint8)
+    # Algorithm 1, Line 21: Initialize final multiclass segmentation map S.
+    final = np.zeros((h, w), dtype=np.uint8)
 
-    """
-    Algorithm 1, Lines 25-27: Case where a unique majority exists (|I_max| == 1).
-    If only one binary s-t cut returns 'foreground' for a pixel, that specific 
-    label is assigned to the final segmentation map.
-    """
+    # Algorithm 1, Lines 25-27: No overlap case - unique majority exists.
     if not any_overlap:
-        # Iterate through each class to apply the binary foreground mask to the final result
         for c in classes:
-            # Create a boolean mask where the current class was predicted as foreground
             m = fg_masks[c] > 0
-            # Assign the class index (zero-indexed) to the final multiclass map
             final[m] = c - 1
-        # Return the resulting map if no overlaps need to be resolved via tie-breaking
         return final
 
-    """
-    EXTENSION/DEVIATION from Algorithm 1, Line 28:
-    The paper suggests using a regional classifier (Random Forest) to 
-    provide a probability p(alpha|xi) as a tie-breaker. 
-    
-    Our architecture extends this logic for Interactive GrabCut by using 
-    spatial distance to user scribbles as the confidence metric instead 
-    of a secondary classifier.
-    """
-    overlap_mask = (overlap_count > 1)
+    # Overlap detected - resolve via distance transform.
+    overlap_mask = overlap_count > 1
 
     dist_to_scrib: Dict[int, np.ndarray] = {}
     classes_for_dt: List[int] = []
-    
-    # Calculate spatial confidence (Distance Transform) for each class
+
+    # Calculate spatial confidence (Distance Transform) for conflicting classes.
     for c in classes:
-        # Optimization: Only calculate distances for classes actually involved in a conflict
-        if np.any(fg_masks[c] & overlap_mask):
-            
-            # Extract only the user-drawn seeds for this specific class
-            s = (anns == c).astype(np.uint8)
-            
-            if np.any(s):
-                """
-                OpenCV's distanceTransform measures distance to the nearest ZERO pixel.
-                To find distance to our seeds, we create a map where seeds are 0 
-                and background is 1.
-                """
-                ones = np.ones_like(s, dtype=np.uint8)
-                ones[s > 0] = 0 # Set seed locations to 0 (the targets)
-                
-                # Compute Euclidean distance map from every pixel to the nearest seed
-                d = cv.distanceTransform(ones, cv.DIST_L2, 3).astype(np.float32)
-            else:
-                """
-                If a class was predicted by the GMM/GraphCut but has no seeds 
-                (e.g., from a previous frame's propagation), we assign a massive 
-                penalty distance (1e6) so it loses almost any tie-break.
-                """
-                d = np.full(s.shape, 1e6, dtype=np.float32)
-            
-            # Map the distance array to the class ID for lookup during the argmin phase
-            dist_to_scrib[c] = d
-            # Keep track of which specific classes are competing in the stack
-            classes_for_dt.append(c)
+        if not np.any(fg_masks[c] & overlap_mask):
+            continue
+
+        # Extract user-drawn seeds for this class.
+        s = (anns == c).astype(np.uint8)
+
+        if np.any(s):
+            # distanceTransform measures distance to nearest ZERO pixel.
+            # Create map where seeds are 0 (targets) and background is 1.
+            ones = np.ones_like(s, dtype=np.uint8)
+            ones[s > 0] = 0
+            d = cv.distanceTransform(ones, cv.DIST_L2, 3).astype(np.float32)
+        else:
+            # No seeds: assign massive penalty so class loses tie-breaks.
+            d = np.full(s.shape, NO_SEED_PENALTY, dtype=np.float32)
+
+        dist_to_scrib[c] = d
+        classes_for_dt.append(c)
 
     if classes_for_dt:
-        """
-        Create a 3D volume where each layer is a distance map.
-        If a class didn't even claim a pixel in the binary mask (fg_masks[c] == 0), 
-        we set its distance to INF (1e9) so it is excluded from the competition.
-        """
-        INF = 1e9
-
-        """
-        If current class c predicted a pixel as foreground (fg_masks[c] > 0), we take the distance to scribble for that class; otherwise, we set it to INF to exclude it from winning the tie-break for that pixel.
-        """
+        # Build distance stack. Non-claimed pixels get INF to exclude from argmin.
         dstack = np.stack(
-            [np.where(fg_masks[c] > 0, dist_to_scrib[c], INF) for c in classes_for_dt],
-            axis=2
+            [
+                np.where(fg_masks[c] > 0, dist_to_scrib[c], TIE_BREAK_INFINITY)
+                for c in classes_for_dt
+            ],
+            axis=2,
         )
-        
-        # arg contains the integer index of the "winning" class (the one with the minimum distance)
+
+        # Winning class has minimum distance.
         arg = np.argmin(dstack, axis=2)
 
-        # First, fill in labels for pixels where only one class was predicted
+        # Fill non-conflicting pixels first.
         for c in classes:
-            # Mask for pixels that are foreground for class 'c' AND have no overlap conflict
             m = (fg_masks[c] > 0) & (~overlap_mask)
             final[m] = c - 1
 
-        """
-        Now resolve conflicts: For each class that participated in the distance stack, 
-        identify pixels where that class had the minimum distance (arg == idx) 
-        and an overlap actually existed.
-        """
+        # Resolve conflicts using distance-based winner.
         for idx, c in enumerate(classes_for_dt):
-            # idx is the position in the stack; if arg == idx, this class 'c' is the closest
             m = overlap_mask & (arg == idx)
             final[m] = c - 1
     else:
-        # Fallback to standard majority assignment if no spatial data is available
+        # Fallback: standard majority assignment.
         for c in classes:
             m = fg_masks[c] > 0
             final[m] = c - 1
 
-    # Algorithm 1, Line 32: Return the final multi-class segmentation S
+    # Algorithm 1, Line 32: Return final multiclass segmentation S.
     return final
 
 
-# ---------- majority voting ensemble, one vs rest ----------
+# ---------------------------------------------------------------------------
+# Majority voting ensemble: one-vs-rest with three color spaces
+# ---------------------------------------------------------------------------
 
-def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
-                                      anns: np.ndarray,
-                                      trio: List[str]) -> np.ndarray:
-    """
-    Majority voting ensemble over generated indexed masks, one per color space.
-    For each color space, compute a full indexed mask via run_one_vs_rest, then vote on labels.
+
+def run_one_vs_rest_majority_ensemble(
+    img_rgb_u8: np.ndarray,
+    anns: np.ndarray,
+    trio: List[str],
+) -> np.ndarray:
+    """Perform ensemble segmentation by voting over three color space predictions.
+
+    For each color space in the trio, computes a full indexed mask via
+    ``run_one_vs_rest``, then fuses results using pixel-wise majority voting.
     Three-way ties default to the first color space in the trio.
-    
-    Automatically parallelizes across the three color space branches.
+
+    Processing of the three color space branches is parallelized.
+
+    Args:
+        img_rgb_u8: Input RGB image, shape (H, W, 3), dtype uint8.
+        anns: Annotation mask with class labels.
+        trio: List of exactly three color space names for the ensemble.
+
+    Returns:
+        Consensus segmentation mask, shape (H, W), dtype uint8.
+
+    Raises:
+        ValueError: If ``trio`` does not contain exactly three color spaces.
     """
-    H, W = anns.shape
+    h, w = anns.shape
     classes = sorted([int(x) for x in np.unique(anns) if x > 1])
 
     if not classes:
-        return np.zeros((H, W), dtype=np.uint8)
-    
+        return np.zeros((h, w), dtype=np.uint8)
+
     if len(trio) != 3:
-        raise ValueError("Ensemble trio must have exactly three color spaces")
-    
-    workers = len(trio)
+        raise ValueError("Ensemble trio must have exactly three color spaces.")
 
     def _predict_for_space(cs: str) -> np.ndarray:
+        """Convert to color space and predict."""
         feats = convert_color_space(img_rgb_u8, cs)
-        pred = run_one_vs_rest(feats, img_rgb_u8, anns)  # type: ignore
+        pred = run_one_vs_rest(feats, img_rgb_u8, anns)
         return pred.astype(np.uint8, copy=False)
-    
-    """
-    Parallel processing of three color space branches
-    """
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = [ex.submit(_predict_for_space, cs) for cs in trio]
+
+    # Parallel processing of three color space branches.
+    with ThreadPoolExecutor(max_workers=len(trio)) as executor:
+        futures = [executor.submit(_predict_for_space, cs) for cs in trio]
         preds = [f.result() for f in futures]
 
-    out = majority_vote_indexed(preds[0], preds[1], preds[2], tie_pref=0)
-    return out
+    return majority_vote_indexed(preds[0], preds[1], preds[2], tie_pref=0)
 
 
-# ---------- worker for parallel batch ----------
+# ---------------------------------------------------------------------------
+# Worker for parallel batch processing
+# ---------------------------------------------------------------------------
 
-def _process_single_image(ann_path: str,
-                          images_dir: str,
-                          output_dir: str,
-                          color_space: str) -> Dict[str, object]:
-    """
-    Worker function to process a single image in single color space mode.
-    Used by ProcessPoolExecutor for batch parallel processing.
+
+def _process_single_image(
+    ann_path: str,
+    images_dir: str,
+    output_dir: str,
+    color_space: str,
+) -> Dict[str, object]:
+    """Process a single image for batch parallel execution.
+
+    Worker function used by ``ProcessPoolExecutor`` in single color space mode.
+
+    Args:
+        ann_path: Absolute path to the annotation file.
+        images_dir: Directory containing source images.
+        output_dir: Directory for output indexed PNG masks.
+        color_space: Color space identifier for feature conversion.
+
+    Returns:
+        Dictionary with processing results:
+            - ``ok``: True if successful, False otherwise.
+            - ``base``: Base filename of the processed image.
+            - ``ms``: Processing time in milliseconds (if successful).
+            - ``out``: Output filename (if successful).
+            - ``reason``: Failure reason (if unsuccessful).
     """
     ann_p = Path(ann_path)
     images_dir_p = Path(images_dir)
@@ -398,6 +480,7 @@ def _process_single_image(ann_path: str,
 
     base = base_from_ann_name(ann_p.stem)
     img_path = find_image(base, images_dir_p)
+
     if img_path is None:
         return {"ok": False, "base": base, "reason": "image not found"}
 
@@ -405,11 +488,13 @@ def _process_single_image(ann_path: str,
     img_rgb = load_img(img_path)
     anns = load_anns(ann_p)
 
-    # resize anns to match image if needed
+    # Resize annotations to match image dimensions if needed.
     if anns.shape[:2] != img_rgb.shape[:2]:
-        anns = cv.resize(anns.astype(np.int32),
-                         (img_rgb.shape[1], img_rgb.shape[0]), # cv.resize expects (width, height)
-                         interpolation=cv.INTER_NEAREST)
+        anns = cv.resize(
+            anns.astype(np.int32),
+            (img_rgb.shape[1], img_rgb.shape[0]),  # cv.resize expects (width, height)
+            interpolation=cv.INTER_NEAREST,
+        )
 
     img_feats = convert_color_space(img_rgb, color_space)
     pred = run_one_vs_rest(img_feats, img_rgb, anns)
@@ -421,99 +506,183 @@ def _process_single_image(ann_path: str,
     return {"ok": True, "base": base, "ms": dt, "out": out_path.name}
 
 
-# ---------- CLI ----------
+# ---------------------------------------------------------------------------
+# CLI: Argument parsing and entry point
+# ---------------------------------------------------------------------------
 
-def parse_args(argv=None):
-    ap = argparse.ArgumentParser("GrabCut batch CLI, OpenCV backend, one vs rest")
-    ap.add_argument("--images_dir", type=str, required=True)
-    ap.add_argument("--anns_dir", type=str, required=True)
-    ap.add_argument("--output_dir", type=str, required=True)
-    ap.add_argument("--num_images", type=int, default=0, help="0 means all")
-    ap.add_argument("--start_one", type=int, default=1, help="1 based index of first file")
+# Supported color spaces for single-space segmentation.
+_COLOR_SPACE_CHOICES = [
+    "rgb",
+    "hsv_conic",
+    "cielab",
+    "c02_scd",
+    "c16_scd",
+    "oklab",
+    "oklch",
+    "jzazbz",
+    "jzczhz",
+    "ictcp_pq",
+    "xyz",
+    "ycbcr_bt709",
+    "srgb_linear",
+    "ruderman_lab",
+    "opponent",
+]
 
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments for the GrabCut batch CLI.
+
+    Args:
+        argv: Command-line arguments. If None, uses ``sys.argv``.
+
+    Returns:
+        Parsed argument namespace.
     """
-    Single color space mode controls
-    """
-    ap.add_argument("--color_space", type=str, default="rgb",
-                    choices=[
-                        "rgb", "hsv_conic", "cielab", "c02_scd", "c16_scd",
-                        "oklab", "oklch", "jzazbz", "jzczhz",
-                        "ictcp_pq", "xyz", "ycbcr_bt709", "srgb_linear" ,"ruderman_lab", "opponent"
-                    ],
-                    help="Input feature color space for the single space baseline path. Default is rgb.")
+    ap = argparse.ArgumentParser(
+        description="GrabCut batch CLI, OpenCV backend, one-vs-rest."
+    )
 
-    # majority voting ensemble controls
-    ap.add_argument("--enable_majority_vote", action="store_true",
-                    help="Enable majority voting ensemble across a trio of color spaces (internally parallelized).")
-    ap.add_argument("--ensemble_trio", type=str, default="ruderman_lab,oklab,jzczhz",
-                    help="Comma separated trio for majority voting, default ruderman_lab,oklab,jzczhz.")
-    
-    # Parallel batch processing control
-    ap.add_argument("--parallel", action="store_true",
-                    help="Enable batch parallel processing of images (single color space mode only). Uses os.cpu_count() workers by default.")
+    # Required paths.
+    ap.add_argument("--images_dir", type=str, required=True,
+                    help="Directory containing source images.")
+    ap.add_argument("--anns_dir", type=str, required=True,
+                    help="Directory containing annotation masks.")
+    ap.add_argument("--output_dir", type=str, required=True,
+                    help="Directory for output indexed PNG masks.")
+
+    # Batch control.
+    ap.add_argument("--num_images", type=int, default=0,
+                    help="Number of images to process. 0 means all.")
+    ap.add_argument("--start_one", type=int, default=1,
+                    help="1-based index of first file to process.")
+
+    # Single color space mode.
+    ap.add_argument(
+        "--color_space",
+        type=str,
+        default="rgb",
+        choices=_COLOR_SPACE_CHOICES,
+        help="Color space for feature extraction. Default: rgb.",
+    )
+
+    # Ensemble mode.
+    ap.add_argument(
+        "--enable_majority_vote",
+        action="store_true",
+        help="Enable ensemble over a trio of color spaces (parallelized).",
+    )
+    ap.add_argument(
+        "--ensemble_trio",
+        type=str,
+        default="ruderman_lab,oklab,jzczhz",
+        help="Comma-separated trio for majority voting.",
+    )
+
+    # Parallelization.
+    ap.add_argument(
+        "--parallel",
+        action="store_true",
+        help="Enable batch parallel processing (single color space mode only).",
+    )
 
     return ap.parse_args(argv)
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> None:
+    """Run the GrabCut batch segmentation pipeline.
+
+    Processes all annotation files in the specified directory, performing
+    one-vs-rest segmentation with optional ensemble voting.
+
+    Args:
+        argv: Command-line arguments. If None, uses ``sys.argv``.
+    """
     args = parse_args(argv)
     images_dir = Path(args.images_dir)
     anns_dir = Path(args.anns_dir)
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    ann_files = sorted([p for p in anns_dir.iterdir()
-                        if p.suffix.lower() in (".npy", ".png", ".bmp", ".tif", ".tiff")])
-    total = len(ann_files)
-    if total == 0:
-        print(json.dumps({"error": "no annotations found", "anns_dir": str(anns_dir)}))
+    # Gather annotation files.
+    valid_suffixes = (".npy", ".png", ".bmp", ".tif", ".tiff")
+    ann_files = sorted([
+        p for p in anns_dir.iterdir()
+        if p.suffix.lower() in valid_suffixes
+    ])
+
+    if not ann_files:
+        print(json.dumps({
+            "error": "no annotations found",
+            "anns_dir": str(anns_dir),
+        }))
         return
 
+    # Apply slicing based on start index and count.
     if args.start_one is not None and args.start_one > 1:
         ann_files = ann_files[args.start_one - 1:]
     if args.num_images and args.num_images > 0:
-        ann_files = ann_files[: args.num_images]
+        ann_files = ann_files[:args.num_images]
 
     processed, skipped = 0, 0
     times_ms: List[float] = []
 
-    # --parallel is only for single color space mode (batch image parallelization)
-    # --enable_majority_vote already parallelizes internally across three color space branches
+    # Warn if conflicting parallel options.
     if args.parallel and args.enable_majority_vote:
-        print("Warning: --parallel is ignored when --enable_majority_vote is enabled (ensemble mode already parallelizes internally)")
+        print(
+            "Warning: --parallel is ignored when --enable_majority_vote "
+            "is enabled (ensemble mode already parallelizes internally)."
+        )
 
     if args.parallel and not args.enable_majority_vote:
-        # Single color space mode with batch parallel processing (os.cpu_count() workers)
+        # Parallel batch processing in single color space mode.
         max_workers = os.cpu_count() or 4
-        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                ex.submit(
+                executor.submit(
                     _process_single_image,
-                    str(ann_path), str(images_dir), str(out_dir),
-                    str(args.color_space)
-                ): ann_path for ann_path in ann_files
+                    str(ann_path),
+                    str(images_dir),
+                    str(out_dir),
+                    str(args.color_space),
+                ): ann_path
+                for ann_path in ann_files
             }
-            for fut in tqdm(as_completed(futures), total=len(futures), unit="img", desc="GrabCut[par]"):
+
+            progress = tqdm(
+                as_completed(futures),
+                total=len(futures),
+                unit="img",
+                desc="GrabCut[par]",
+            )
+            for fut in progress:
                 try:
                     res = fut.result()
                     if res.get("ok"):
                         processed += 1
                         times_ms.append(float(res.get("ms", 0.0)))
-                        tqdm.write(f"[OK] {res.get('base')} ({res.get('ms'):.1f} ms) -> {res.get('out')}")
+                        tqdm.write(
+                            f"[OK] {res.get('base')} "
+                            f"({res.get('ms'):.1f} ms) -> {res.get('out')}"
+                        )
                     else:
                         skipped += 1
-                        tqdm.write(f"[SKIP] {Path(futures[fut]).name} {res.get('reason')}")
-                except Exception as e:
+                        tqdm.write(
+                            f"[SKIP] {Path(futures[fut]).name} {res.get('reason')}"
+                        )
+                except Exception as exc:
                     skipped += 1
                     ann_path = futures[fut]
-                    tqdm.write(f"[SKIP] {ann_path.name} {e}")
+                    tqdm.write(f"[SKIP] {ann_path.name} {exc}")
     else:
-        # Sequential processing: either ensemble mode or single color space without --parallel
+        # Sequential processing.
         desc = "GrabCut[ensemble]" if args.enable_majority_vote else "GrabCut"
-        iterator = tqdm(ann_files, unit="img", desc=desc)
-        for ann_path in iterator:
+        progress = tqdm(ann_files, unit="img", desc=desc)
+
+        for ann_path in progress:
             base = base_from_ann_name(ann_path.stem)
             img_path = find_image(base, images_dir)
+
             if img_path is None:
                 tqdm.write(f"[SKIP] {ann_path.name} image not found")
                 skipped += 1
@@ -522,27 +691,32 @@ def main(argv=None):
             try:
                 t0 = perf_counter()
                 img_rgb = load_img(img_path)
-                anns = load_anns(ann_path)
+                anns_data = load_anns(ann_path)
 
-                if anns.shape[:2] != img_rgb.shape[:2]:
-                    anns = cv.resize(anns.astype(np.int32),
-                                     (img_rgb.shape[1], img_rgb.shape[0]),
-                                     interpolation=cv.INTER_NEAREST)
+                # Resize annotations to match image dimensions.
+                if anns_data.shape[:2] != img_rgb.shape[:2]:
+                    anns_data = cv.resize(
+                        anns_data.astype(np.int32),
+                        (img_rgb.shape[1], img_rgb.shape[0]),
+                        interpolation=cv.INTER_NEAREST,
+                    )
 
                 if args.enable_majority_vote:
-                    trio = [s.strip() for s in (args.ensemble_trio if args.ensemble_trio else "ruderman_lab,oklab,jzczhz").split(",")]
+                    trio_str = args.ensemble_trio or "ruderman_lab,oklab,jzczhz"
+                    trio = [s.strip() for s in trio_str.split(",")]
                     if len(trio) != 3:
-                        raise ValueError("ensemble_trio must have exactly three comma separated color spaces")
+                        raise ValueError(
+                            "ensemble_trio must have exactly three "
+                            "comma-separated color spaces."
+                        )
                     pred = run_one_vs_rest_majority_ensemble(
                         img_rgb_u8=img_rgb,
-                        anns=anns,
-                        trio=trio
+                        anns=anns_data,
+                        trio=trio,
                     )
                 else:
                     img_feats = convert_color_space(img_rgb, args.color_space)
-                    pred = run_one_vs_rest(
-                        img_feats, img_rgb, anns
-                    )
+                    pred = run_one_vs_rest(img_feats, img_rgb, anns_data)
 
                 out_path = out_dir / f"{base}_index.png"
                 save_indexed_png(pred, str(out_path))
@@ -554,13 +728,24 @@ def main(argv=None):
 
             except FileNotFoundError:
                 skipped += 1
-                tqdm.write(f"[SKIP] {ann_path.name} image file not found, expected at {img_path}")
-            except cv.error as e:
+                tqdm.write(
+                    f"[SKIP] {ann_path.name} "
+                    f"image file not found, expected at {img_path}"
+                )
+            except cv.error as exc:
                 skipped += 1
-                tqdm.write(f"[SKIP] {ann_path.name} OpenCV GrabCut failed: {e}")
-            except Exception as e:
+                tqdm.write(f"[SKIP] {ann_path.name} OpenCV GrabCut failed: {exc}")
+            except Exception as exc:
                 skipped += 1
-                tqdm.write(f"[SKIP] {ann_path.name} {e}")
+                tqdm.write(f"[SKIP] {ann_path.name} {exc}")
+
+    # Compute effective max_workers for summary.
+    if args.enable_majority_vote:
+        effective_workers = 3
+    elif args.parallel:
+        effective_workers = os.cpu_count() or 4
+    else:
+        effective_workers = 1
 
     summary = {
         "mode": "batch",
@@ -571,15 +756,15 @@ def main(argv=None):
         "processed": processed,
         "skipped": skipped,
         "params": {
-            "gc_iters": 5,
+            "gc_iters": GRABCUT_ITERATIONS,
             "tie_mode": "nearest-scribble",
             "color_space": args.color_space,
             "enable_majority_vote": bool(args.enable_majority_vote),
             "ensemble_trio": str(args.ensemble_trio),
             "parallel": bool(args.parallel),
-            "max_workers": 3 if args.enable_majority_vote else (os.cpu_count() or 4) if args.parallel else 1,
+            "max_workers": effective_workers,
         },
-        "timing_ms_avg": (float(np.mean(times_ms)) if times_ms else None)
+        "timing_ms_avg": float(np.mean(times_ms)) if times_ms else None,
     }
     print(json.dumps(summary, indent=2))
 

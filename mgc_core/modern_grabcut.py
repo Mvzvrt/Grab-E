@@ -412,8 +412,7 @@ def seeds_confidence_lab(img_rgb: np.ndarray, seeds_fg: np.ndarray, seeds_bg: np
     return mask
 
 def expand_seeds(img_rgb: np.ndarray, E: np.ndarray, seeds_fg: np.ndarray, seeds_bg: np.ndarray,
-                 r_geo: int, edge_alpha: float, adaptive: bool=True, conf_tau: float=0.75,
-                 dbg: Optional[DebugRecorder]=None, save_geo: bool=False) -> Tuple[np.ndarray,np.ndarray]:
+                 r_geo: int, edge_alpha: float, conf_tau: float) -> Tuple[np.ndarray,np.ndarray]:
     """
     Ensures that the cost map is not dominated by a few outlier pixels
     """

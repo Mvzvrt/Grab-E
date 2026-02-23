@@ -121,10 +121,7 @@ def mgc_refine_seeds(img_rgb_u8: np.ndarray,
         seeds_bg=_ensure_bool(seeds_bg),
         r_geo=int(p["geo_radius"]),
         edge_alpha=float(p["edge_alpha"]),
-        adaptive=bool(p["adaptive_edges"]),
         conf_tau=float(p["conf_tau"]),
-        dbg=None,
-        save_geo=False
     )
 
     return seeds_fg2.astype(bool), seeds_bg2.astype(bool)
