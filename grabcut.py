@@ -222,12 +222,7 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
                     img_rgb_u8: np.ndarray,
                     anns: np.ndarray,
                     gc_iters: int = 5,
-                    tie_mode: str = "nearest-scribble",
-                    collect_models: bool = False,
-                    collect_binary_masks: bool = False,
-                    collect_pre_refinement_masks: bool = False,
-                    collect_superpixels: bool = False,
-                    collect_guided_soft: bool = False):
+                    tie_mode: str = "nearest-scribble") -> np.ndarray:
     """
     For each present class c > 1:
       FG seeds = anns == c
@@ -235,44 +230,14 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
     Combine binary masks into a single index map where:
       output 0 = background, output 1..20 = foreground classes, map c -> c - 1.
 
-    New options:
-      collect_models=True returns models_by_class where models_by_class[c] = {'bgdModel': ..., 'fgdModel': ...}
-      collect_binary_masks=True returns fg_masks (post-refinement binary masks)
-      collect_pre_refinement_masks=True returns fg_masks_pre (pre-refinement binary masks, raw GrabCut output)
-      collect_superpixels=True returns superpixel_segs (superpixel segmentation maps per class)
-      collect_guided_soft=True returns guided_soft_masks (soft masks from guided filter per class)
-      
-    Returns based on flags:
-      - Just final: final_mask
-      - With models: (final_mask, models_by_class)
-      - With binary_masks: (final_mask, fg_masks)
-      - With pre_refinement: (final_mask, fg_masks_pre)
-      - With superpixels: (final_mask, superpixel_segs)
-      - With guided_soft: (final_mask, guided_soft_masks)
-      - Combinations return in order: (final_mask, [models_by_class], [fg_masks], [fg_masks_pre], [superpixel_segs], [guided_soft_masks])
+    Returns the final indexed mask.
     """
     H, W = anns.shape
     classes = sorted([int(x) for x in np.unique(anns) if x > 1])
     if not classes:
-        empty = np.zeros((H, W), dtype=np.uint8)
-        returns = [empty]
-        if collect_models:
-            returns.append({})
-        if collect_binary_masks:
-            returns.append({})
-        if collect_pre_refinement_masks:
-            returns.append({})
-        if collect_superpixels:
-            returns.append({})
-        if collect_guided_soft:
-            returns.append({})
-        return tuple(returns) if len(returns) > 1 else empty
+        return np.zeros((H, W), dtype=np.uint8)
 
     fg_masks: Dict[int, np.ndarray] = {}
-    fg_masks_pre: Dict[int, np.ndarray] = {}
-    models_by_class: Dict[int, Dict[str, np.ndarray]] = {}
-    superpixel_segs: Dict[int, np.ndarray] = {}
-    guided_soft_masks: Dict[int, np.ndarray] = {}
 
     for c in classes:
         """
@@ -304,21 +269,7 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
     Performs multiclass assembly
     """
     final = _combine_fg_masks_to_final(fg_masks, anns, tie_mode)
-    
-    # Build return tuple based on what was requested
-    returns = [final]
-    if collect_models:
-        returns.append(models_by_class)
-    if collect_binary_masks:
-        returns.append(fg_masks)
-    if collect_pre_refinement_masks:
-        returns.append(fg_masks_pre)
-    if collect_superpixels:
-        returns.append(superpixel_segs)
-    if collect_guided_soft:
-        returns.append(guided_soft_masks)
-    
-    return tuple(returns) if len(returns) > 1 else final
+    return final
 
 
 def _combine_fg_masks_to_final(fg_masks: Dict[int, np.ndarray],
@@ -505,153 +456,6 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
     return out
 
 
-def _ensure_dir(p: Path) -> None:
-    p.mkdir(parents=True, exist_ok=True)
-
-
-def save_models_npz(base: str,
-                    color_space: str,
-                    out_dir: Path,
-                    models_by_class: Dict[int, Dict[str, np.ndarray]],
-                    meta: Optional[Dict[str, object]] = None) -> List[str]:
-    """
-    Save per-class models to individual NPZ files.
-
-    File name pattern: {base}__{color_space}__c{class_id:02d}__models.npz
-    Contents:
-      - bgdModel, shape 1 by 65 float64
-      - fgdModel, shape 1 by 65 float64
-      - meta, dict stored as JSON string under key meta_json
-    Returns list of filenames written.
-    """
-    written: List[str] = []
-    _ensure_dir(out_dir)
-
-    meta_json = json.dumps(meta or {}, ensure_ascii=False)
-    for c, d in models_by_class.items():
-        bgm = np.asarray(d.get("bgdModel"))
-        fgm = np.asarray(d.get("fgdModel"))
-
-        if bgm.shape != (1, 65) or fgm.shape != (1, 65):
-            continue
-
-        fname = f"{base}__{color_space}__c{c:02d}__models.npz"
-        fpath = out_dir / fname
-        np.savez(fpath, bgdModel=bgm, fgdModel=fgm, meta_json=meta_json)
-        written.append(fname)
-    return written
-
-
-def save_binary_mask_indexed(base: str,
-                             color_space: str,
-                             class_id: int,
-                             binary_mask: np.ndarray,
-                             out_dir: Path,
-                             suffix: str = "binary") -> str:
-    """
-        Save a binary mask as an indexed PNG.
-        The binary mask (0 or 1) is converted to indexed format where:
-            - 0 stays as 0 (background)
-            - 1 is mapped to the class label equal to `class_id` (app/GT convention)
-    
-    File name pattern: {base}__{color_space}__c{class_id:02d}__{suffix}.png
-    suffix: "binary" for post-refinement, "pre_refine" for pre-refinement, etc.
-    Returns the filename written.
-    """
-    _ensure_dir(out_dir)
-    
-    # Convert binary mask to indexed: 0 -> 0, 1 -> class_id
-    indexed = np.where(binary_mask > 0, class_id, 0).astype(np.uint8)
-    
-    fname = f"{base}__{color_space}__c{class_id:02d}__{suffix}.png"
-    fpath = out_dir / fname
-    save_indexed_png(indexed, str(fpath))
-    
-    return fname
-
-
-def save_superpixel_segmentation(base: str,
-                                 color_space: str,
-                                 class_id: int,
-                                 superpixel_seg: np.ndarray,
-                                 out_dir: Path,
-                                 img_rgb: Optional[np.ndarray] = None) -> str:
-    """
-    Save superpixel segmentation as boundary visualization PNG and raw NPY.
-    If img_rgb is provided, overlays superpixel boundaries on the original image.
-    Otherwise creates a grayscale visualization with boundaries.
-    
-    File name pattern: 
-      - {base}__{color_space}__c{class_id:02d}__superpixels.png (boundary visualization)
-      - {base}__{color_space}__c{class_id:02d}__superpixels.npy (raw data)
-    Returns the base filename written.
-    """
-    _ensure_dir(out_dir)
-    
-    # Save raw superpixel labels as NPY
-    fname_npy = f"{base}__{color_space}__c{class_id:02d}__superpixels.npy"
-    fpath_npy = out_dir / fname_npy
-    np.save(fpath_npy, superpixel_seg.astype(np.int32))
-    
-    H, W = superpixel_seg.shape
-    
-    # Create boundary map by detecting edges between different superpixels
-    sp_padded = np.pad(superpixel_seg, 1, mode='edge')
-    boundaries = np.zeros((H, W), dtype=bool)
-    boundaries |= (superpixel_seg != sp_padded[:-2, 1:-1])  # top
-    boundaries |= (superpixel_seg != sp_padded[2:, 1:-1])   # bottom
-    boundaries |= (superpixel_seg != sp_padded[1:-1, :-2])  # left
-    boundaries |= (superpixel_seg != sp_padded[1:-1, 2:])   # right
-    
-    if img_rgb is not None and img_rgb.shape[:2] == (H, W):
-        # Overlay boundaries on original RGB image
-        sp_vis = img_rgb.copy()
-        # Draw boundaries in bright cyan (easy to see on most images)
-        sp_vis[boundaries] = [0, 255, 255]  # BGR format: cyan
-    else:
-        # Fallback: modulo-based grayscale coloring with white boundaries
-        sp_vis_mod = ((superpixel_seg % 85) * 3).astype(np.uint8)
-        sp_vis = cv.cvtColor(sp_vis_mod, cv.COLOR_GRAY2BGR)
-        sp_vis[boundaries] = [255, 255, 255]  # White boundaries
-    
-    fname_png = f"{base}__{color_space}__c{class_id:02d}__superpixels.png"
-    fpath_png = out_dir / fname_png
-    cv.imwrite(str(fpath_png), sp_vis)
-    
-    return fname_png
-
-
-def save_guided_soft_mask(base: str,
-                         color_space: str,
-                         class_id: int,
-                         soft_mask: np.ndarray,
-                         out_dir: Path) -> str:
-    """
-    Save the soft mask from guided filtering.
-    The soft mask is a float32 array in range [0, 1], saved as both NPY and visualized as PNG.
-    
-    File name pattern:
-      - {base}__{color_space}__c{class_id:02d}__guided_soft.png (visualization, 0-255)
-      - {base}__{color_space}__c{class_id:02d}__guided_soft.npy (raw float32 data)
-    Returns the base filename written.
-    """
-    _ensure_dir(out_dir)
-    
-    # Save raw float32 soft mask as NPY
-    fname_npy = f"{base}__{color_space}__c{class_id:02d}__guided_soft.npy"
-    fpath_npy = out_dir / fname_npy
-    np.save(fpath_npy, soft_mask.astype(np.float32))
-    
-    # Create visualization: scale to 0-255
-    soft_vis = np.clip(soft_mask * 255.0, 0, 255).astype(np.uint8)
-    
-    fname_png = f"{base}__{color_space}__c{class_id:02d}__guided_soft.png"
-    fpath_png = out_dir / fname_png
-    cv.imwrite(str(fpath_png), soft_vis)
-    
-    return fname_png
-
-
 # ---------- worker for parallel batch ----------
 
 def _process_single_image(ann_path: str,
@@ -660,16 +464,6 @@ def _process_single_image(ann_path: str,
                           color_space: str,
                           gc_iters: int,
                           tie_mode: str,
-                          emit_models: bool,
-                          models_dir: Optional[str],
-                          emit_binary_masks: bool,
-                          binary_masks_dir: Optional[str],
-                          emit_pre_refinement_masks: bool,
-                          pre_refinement_masks_dir: Optional[str],
-                          emit_superpixels: bool,
-                          superpixels_dir: Optional[str],
-                          emit_guided_soft: bool,
-                          guided_soft_dir: Optional[str],
                           enable_majority_vote: bool,
                           ensemble_trio: str,
                           trio_parallel: bool,
@@ -721,142 +515,19 @@ def _process_single_image(ann_path: str,
             trio_workers=int(trio_workers) if trio_workers else 0,
             label_tie_pref=label_tie_pref
         )
-
-        written = []
-        binary_written = []
-        pre_refinement_written = []
-        superpixels_written = []
-        guided_soft_written = []
     else:
         img_feats = convert_color_space(img_rgb, color_space)
-        
-        # Determine what to collect based on flags
-        result = run_one_vs_rest(
+        pred = run_one_vs_rest(
             img_feats, img_rgb, anns,
             gc_iters=int(gc_iters),
-            tie_mode=tie_mode,
-            collect_models=emit_models,
-            collect_binary_masks=emit_binary_masks,
-            collect_pre_refinement_masks=emit_pre_refinement_masks,
-            collect_superpixels=emit_superpixels,
-            collect_guided_soft=emit_guided_soft
+            tie_mode=tie_mode
         )
-        
-        # Unpack result based on what was collected
-        if isinstance(result, tuple):
-            pred = result[0]
-            idx = 1
-            models_by_class = result[idx] if emit_models else {}
-            if emit_models:
-                idx += 1
-            fg_masks = result[idx] if emit_binary_masks else {}
-            if emit_binary_masks:
-                idx += 1
-            fg_masks_pre = result[idx] if emit_pre_refinement_masks else {}
-            if emit_pre_refinement_masks:
-                idx += 1
-            superpixel_segs = result[idx] if emit_superpixels else {}
-            if emit_superpixels:
-                idx += 1
-            guided_soft_masks = result[idx] if emit_guided_soft else {}
-        else:
-            pred = result
-            models_by_class = {}
-            fg_masks = {}
-            fg_masks_pre = {}
-            superpixel_segs = {}
-            guided_soft_masks = {}
-        
-        # Save models if requested
-        if emit_models:
-            models_out_dir = Path(models_dir) if models_dir else (out_dir_p / "models")
-            written = save_models_npz(
-                base=base,
-                color_space=color_space,
-                out_dir=models_out_dir,
-                models_by_class=models_by_class,
-                meta={
-                    "base": base,
-                    "color_space": color_space,
-                    "gc_iters": int(gc_iters),
-                    "tie_mode": tie_mode,
-                },
-            )
-        else:
-            written = []
-        
-        # Save binary masks (post-refinement) if requested
-        if emit_binary_masks:
-            binary_out_dir = Path(binary_masks_dir) if binary_masks_dir else (out_dir_p / "binary_masks")
-            binary_written = []
-            for class_id, binary_mask in fg_masks.items():
-                fname = save_binary_mask_indexed(
-                    base=base,
-                    color_space=color_space,
-                    class_id=class_id,
-                    binary_mask=binary_mask,
-                    out_dir=binary_out_dir,
-                    suffix="binary"
-                )
-                binary_written.append(fname)
-        else:
-            binary_written = []
-        
-        # Save pre-refinement masks if requested
-        if emit_pre_refinement_masks:
-            pre_refine_out_dir = Path(pre_refinement_masks_dir) if pre_refinement_masks_dir else (out_dir_p / "pre_refinement_masks")
-            pre_refinement_written = []
-            for class_id, binary_mask in fg_masks_pre.items():
-                fname = save_binary_mask_indexed(
-                    base=base,
-                    color_space=color_space,
-                    class_id=class_id,
-                    binary_mask=binary_mask,
-                    out_dir=pre_refine_out_dir,
-                    suffix="pre_refine"
-                )
-                pre_refinement_written.append(fname)
-        else:
-            pre_refinement_written = []
-        
-        # Save superpixel segmentations if requested
-        if emit_superpixels:
-            superpixels_out_dir = Path(superpixels_dir) if superpixels_dir else (out_dir_p / "superpixels")
-            superpixels_written = []
-            for class_id, sp_seg in superpixel_segs.items():
-                fname = save_superpixel_segmentation(
-                    base=base,
-                    color_space=color_space,
-                    class_id=class_id,
-                    superpixel_seg=sp_seg,
-                    out_dir=superpixels_out_dir,
-                    img_rgb=img_rgb  # Pass RGB image for overlay
-                )
-                superpixels_written.append(fname)
-        else:
-            superpixels_written = []
-        
-        # Save guided soft masks if requested
-        if emit_guided_soft:
-            guided_soft_out_dir = Path(guided_soft_dir) if guided_soft_dir else (out_dir_p / "guided_soft")
-            guided_soft_written = []
-            for class_id, soft_mask in guided_soft_masks.items():
-                fname = save_guided_soft_mask(
-                    base=base,
-                    color_space=color_space,
-                    class_id=class_id,
-                    soft_mask=soft_mask,
-                    out_dir=guided_soft_out_dir
-                )
-                guided_soft_written.append(fname)
-        else:
-            guided_soft_written = []
 
     out_path = out_dir_p / f"{base}_index.png"
     save_indexed_png(pred, str(out_path))
 
     dt = (perf_counter() - t0) * 1000.0
-    return {"ok": True, "base": base, "ms": dt, "out": out_path.name, "models_written": written, "binary_masks_written": binary_written, "pre_refinement_masks_written": pre_refinement_written, "superpixels_written": superpixels_written, "guided_soft_written": guided_soft_written}
+    return {"ok": True, "base": base, "ms": dt, "out": out_path.name}
 
 
 # ---------- CLI ----------
@@ -894,32 +565,9 @@ def parse_args(argv=None):
     ap.add_argument("--ensemble_trio_workers", type=int, default=0,
                     help="Workers for intra image trio parallelization with threads, 0 means len(trio)")
     
-    ### Must be default
     ap.add_argument("--ensemble_label_tie_strategy", type=str, default="first",
                     choices=["first", "second", "third"],
                     help="When indexed labels from three color spaces all disagree at a pixel, choose first, second, or third.")
-
-    ### Must REMOVE
-    ap.add_argument("--emit_models", action="store_true",
-                    help="When set, save per class bgdModel and fgdModel NPZ files for the single space path.")
-    ap.add_argument("--models_dir", type=str, default="",
-                    help="Optional output directory for NPZ model files, defaults to output_dir slash models")
-    ap.add_argument("--emit_binary_masks", action="store_true",
-                    help="When set, save per class binary masks (post-refinement) as indexed PNG files for the single space path.")
-    ap.add_argument("--binary_masks_dir", type=str, default="",
-                    help="Optional output directory for binary mask PNG files, defaults to output_dir slash binary_masks")
-    ap.add_argument("--emit_pre_refinement_masks", action="store_true",
-                    help="When set, save per class pre-refinement masks (raw GrabCut output before superpixel refinement) for comparison.")
-    ap.add_argument("--pre_refinement_masks_dir", type=str, default="",
-                    help="Optional output directory for pre-refinement mask PNG files, defaults to output_dir slash pre_refinement_masks")
-    ap.add_argument("--emit_superpixels", action="store_true",
-                    help="When set, save per class superpixel segmentations from the superpixel boundary snapping phase.")
-    ap.add_argument("--superpixels_dir", type=str, default="",
-                    help="Optional output directory for superpixel segmentation files, defaults to output_dir slash superpixels")
-    ap.add_argument("--emit_guided_soft", action="store_true",
-                    help="When set, save per class soft masks from the guided filtering phase before thresholding.")
-    ap.add_argument("--guided_soft_dir", type=str, default="",
-                    help="Optional output directory for guided soft mask files, defaults to output_dir slash guided_soft")
 
     ### Keep as argument
     ap.add_argument("--parallel", action="store_true", help="Enable parallel processing of images")
@@ -937,26 +585,6 @@ def main(argv=None):
     anns_dir = Path(args.anns_dir)
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    models_out_dir = Path(args.models_dir) if args.models_dir else (out_dir / "models")
-    if args.emit_models and not args.enable_majority_vote:
-        models_out_dir.mkdir(parents=True, exist_ok=True)
-
-    binary_masks_out_dir = Path(args.binary_masks_dir) if args.binary_masks_dir else (out_dir / "binary_masks")
-    if args.emit_binary_masks and not args.enable_majority_vote:
-        binary_masks_out_dir.mkdir(parents=True, exist_ok=True)
-
-    pre_refinement_masks_out_dir = Path(args.pre_refinement_masks_dir) if args.pre_refinement_masks_dir else (out_dir / "pre_refinement_masks")
-    if args.emit_pre_refinement_masks and not args.enable_majority_vote:
-        pre_refinement_masks_out_dir.mkdir(parents=True, exist_ok=True)
-
-    superpixels_out_dir = Path(args.superpixels_dir) if args.superpixels_dir else (out_dir / "superpixels")
-    if args.emit_superpixels and not args.enable_majority_vote:
-        superpixels_out_dir.mkdir(parents=True, exist_ok=True)
-
-    guided_soft_out_dir = Path(args.guided_soft_dir) if args.guided_soft_dir else (out_dir / "guided_soft")
-    if args.emit_guided_soft and not args.enable_majority_vote:
-        guided_soft_out_dir.mkdir(parents=True, exist_ok=True)
 
     ann_files = sorted([p for p in anns_dir.iterdir()
                         if p.suffix.lower() in (".npy", ".png", ".bmp", ".tif", ".tiff")])
@@ -990,11 +618,6 @@ def main(argv=None):
                     _process_single_image,
                     str(ann_path), str(images_dir), str(out_dir),
                     str(args.color_space), int(args.gc_iters), str(args.tie_mode),
-                    bool(args.emit_models), str(models_out_dir) if args.emit_models and not args.enable_majority_vote else None,
-                    bool(args.emit_binary_masks), str(binary_masks_out_dir) if args.emit_binary_masks and not args.enable_majority_vote else None,
-                    bool(args.emit_pre_refinement_masks), str(pre_refinement_masks_out_dir) if args.emit_pre_refinement_masks and not args.enable_majority_vote else None,
-                    bool(args.emit_superpixels), str(superpixels_out_dir) if args.emit_superpixels and not args.enable_majority_vote else None,
-                    bool(args.emit_guided_soft), str(guided_soft_out_dir) if args.emit_guided_soft and not args.enable_majority_vote else None,
                     bool(args.enable_majority_vote), str(args.ensemble_trio),
                     bool(trio_parallel_flag) and bool(args.enable_majority_vote),
                     int(args.ensemble_trio_workers),
@@ -1007,23 +630,7 @@ def main(argv=None):
                     if res.get("ok"):
                         processed += 1
                         times_ms.append(float(res.get("ms", 0.0)))
-                        msg = f"[OK] {res.get('base')} ({res.get('ms'):.1f} ms) -> {res.get('out')}"
-                        written = res.get("models_written")
-                        if written:
-                            msg += f", models: {len(written)} files"
-                        binary_written = res.get("binary_masks_written")
-                        if binary_written:
-                            msg += f", binary_masks: {len(binary_written)} files"
-                        pre_refine_written = res.get("pre_refinement_masks_written")
-                        if pre_refine_written:
-                            msg += f", pre_refine: {len(pre_refine_written)} files"
-                        superpixels_written = res.get("superpixels_written")
-                        if superpixels_written:
-                            msg += f", superpixels: {len(superpixels_written)} files"
-                        guided_soft_written = res.get("guided_soft_written")
-                        if guided_soft_written:
-                            msg += f", guided_soft: {len(guided_soft_written)} files"
-                        tqdm.write(msg)
+                        tqdm.write(f"[OK] {res.get('base')} ({res.get('ms'):.1f} ms) -> {res.get('out')}")
                     else:
                         skipped += 1
                         tqdm.write(f"[SKIP] {Path(futures[fut]).name} {res.get('reason')}")
@@ -1051,13 +658,8 @@ def main(argv=None):
                                      (img_rgb.shape[1], img_rgb.shape[0]),
                                      interpolation=cv.INTER_NEAREST)
 
-                written = []
-                binary_written = []
-                pre_refinement_written = []
-                superpixels_written = []
-                guided_soft_written = []
                 if args.enable_majority_vote:
-                    trio = [s.strip() for s in (args.ensemble_trio if args.ensemble_trio else "jzazbz,jzczhz,rgb").split(",")]
+                    trio = [s.strip() for s in (args.ensemble_trio if args.ensemble_trio else "ruderman_lab,oklab,jzczhz").split(",")]
                     if len(trio) != 3:
                         raise ValueError("ensemble_trio must have exactly three comma separated color spaces")
                     tie_map = {"first": 0, "second": 1, "third": 2}
@@ -1074,109 +676,11 @@ def main(argv=None):
                     )
                 else:
                     img_feats = convert_color_space(img_rgb, args.color_space)
-                    
-                    # Call run_one_vs_rest with appropriate flags
-                    result = run_one_vs_rest(
+                    pred = run_one_vs_rest(
                         img_feats, img_rgb, anns,
                         gc_iters=int(args.gc_iters),
-                        tie_mode=args.tie_mode,
-                        collect_models=args.emit_models,
-                        collect_binary_masks=args.emit_binary_masks,
-                        collect_pre_refinement_masks=args.emit_pre_refinement_masks,
-                        collect_superpixels=args.emit_superpixels,
-                        collect_guided_soft=args.emit_guided_soft
+                        tie_mode=args.tie_mode
                     )
-                    
-                    # Unpack result based on what was collected
-                    if isinstance(result, tuple):
-                        pred = result[0]
-                        idx = 1
-                        models_by_class = result[idx] if args.emit_models else {}
-                        if args.emit_models:
-                            idx += 1
-                        fg_masks = result[idx] if args.emit_binary_masks else {}
-                        if args.emit_binary_masks:
-                            idx += 1
-                        fg_masks_pre = result[idx] if args.emit_pre_refinement_masks else {}
-                        if args.emit_pre_refinement_masks:
-                            idx += 1
-                        superpixel_segs = result[idx] if args.emit_superpixels else {}
-                        if args.emit_superpixels:
-                            idx += 1
-                        guided_soft_masks = result[idx] if args.emit_guided_soft else {}
-                    else:
-                        pred = result
-                        models_by_class = {}
-                        fg_masks = {}
-                        fg_masks_pre = {}
-                        superpixel_segs = {}
-                        guided_soft_masks = {}
-                    
-                    # Save models if requested
-                    if args.emit_models:
-                        written = save_models_npz(
-                            base=base,
-                            color_space=args.color_space,
-                            out_dir=models_out_dir,
-                            models_by_class=models_by_class,
-                            meta={
-                                "base": base,
-                                "color_space": args.color_space,
-                                "gc_iters": int(args.gc_iters),
-                                "tie_mode": args.tie_mode,
-                            },
-                        )
-                    
-                    # Save binary masks (post-refinement) if requested
-                    if args.emit_binary_masks:
-                        for class_id, binary_mask in fg_masks.items():
-                            fname = save_binary_mask_indexed(
-                                base=base,
-                                color_space=args.color_space,
-                                class_id=class_id,
-                                binary_mask=binary_mask,
-                                out_dir=binary_masks_out_dir,
-                                suffix="binary"
-                            )
-                            binary_written.append(fname)
-                    
-                    # Save pre-refinement masks if requested
-                    if args.emit_pre_refinement_masks:
-                        for class_id, binary_mask in fg_masks_pre.items():
-                            fname = save_binary_mask_indexed(
-                                base=base,
-                                color_space=args.color_space,
-                                class_id=class_id,
-                                binary_mask=binary_mask,
-                                out_dir=pre_refinement_masks_out_dir,
-                                suffix="pre_refine"
-                            )
-                            pre_refinement_written.append(fname)
-                    
-                    # Save superpixel segmentations if requested
-                    if args.emit_superpixels:
-                        for class_id, sp_seg in superpixel_segs.items():
-                            fname = save_superpixel_segmentation(
-                                base=base,
-                                color_space=args.color_space,
-                                class_id=class_id,
-                                superpixel_seg=sp_seg,
-                                out_dir=superpixels_out_dir,
-                                img_rgb=img_rgb  # Pass RGB image for overlay
-                            )
-                            superpixels_written.append(fname)
-                    
-                    # Save guided soft masks if requested
-                    if args.emit_guided_soft:
-                        for class_id, soft_mask in guided_soft_masks.items():
-                            fname = save_guided_soft_mask(
-                                base=base,
-                                color_space=args.color_space,
-                                class_id=class_id,
-                                soft_mask=soft_mask,
-                                out_dir=guided_soft_out_dir
-                            )
-                            guided_soft_written.append(fname)
 
                 out_path = out_dir / f"{base}_index.png"
                 save_indexed_png(pred, str(out_path))
@@ -1184,18 +688,7 @@ def main(argv=None):
                 dt = (perf_counter() - t0) * 1000.0
                 times_ms.append(dt)
                 processed += 1
-                msg = f"[OK] {base} ({dt:.1f} ms) -> {out_path.name}"
-                if written:
-                    msg += f", models: {len(written)} files"
-                if binary_written:
-                    msg += f", binary_masks: {len(binary_written)} files"
-                if pre_refinement_written:
-                    msg += f", pre_refine: {len(pre_refinement_written)} files"
-                if superpixels_written:
-                    msg += f", superpixels: {len(superpixels_written)} files"
-                if guided_soft_written:
-                    msg += f", guided_soft: {len(guided_soft_written)} files"
-                tqdm.write(msg)
+                tqdm.write(f"[OK] {base} ({dt:.1f} ms) -> {out_path.name}")
 
             except FileNotFoundError:
                 skipped += 1
@@ -1223,19 +716,8 @@ def main(argv=None):
             "ensemble_trio": str(args.ensemble_trio),
             "ensemble_trio_parallel": str(args.ensemble_trio_parallel),
             "ensemble_trio_workers": int(args.ensemble_trio_workers),
-
             "ensemble_label_tie_strategy": str(args.ensemble_label_tie_strategy),
             "parallel": bool(args.parallel),
-            "emit_models": bool(args.emit_models) and not bool(args.enable_majority_vote),
-            "models_dir": str(models_out_dir) if args.emit_models and not args.enable_majority_vote else None,
-            "emit_binary_masks": bool(args.emit_binary_masks) and not bool(args.enable_majority_vote),
-            "binary_masks_dir": str(binary_masks_out_dir) if args.emit_binary_masks and not args.enable_majority_vote else None,
-            "emit_pre_refinement_masks": bool(args.emit_pre_refinement_masks) and not bool(args.enable_majority_vote),
-            "pre_refinement_masks_dir": str(pre_refinement_masks_out_dir) if args.emit_pre_refinement_masks and not args.enable_majority_vote else None,
-            "emit_superpixels": bool(args.emit_superpixels) and not bool(args.enable_majority_vote),
-            "superpixels_dir": str(superpixels_out_dir) if args.emit_superpixels and not args.enable_majority_vote else None,
-            "emit_guided_soft": bool(args.emit_guided_soft) and not bool(args.enable_majority_vote),
-            "guided_soft_dir": str(guided_soft_out_dir) if args.emit_guided_soft and not args.enable_majority_vote else None,
             "max_workers": int(args.max_workers if args.max_workers else (os.cpu_count() or 4) if args.parallel else 0),
         },
         "timing_ms_avg": (float(np.mean(times_ms)) if times_ms else None)
