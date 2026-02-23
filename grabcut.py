@@ -495,6 +495,9 @@ def parse_args(argv=None):
     ap.add_argument("--num_images", type=int, default=0, help="0 means all")
     ap.add_argument("--start_one", type=int, default=1, help="1 based index of first file")
 
+    """
+    Single color space mode controls
+    """
     ap.add_argument("--color_space", type=str, default="rgb",
                     choices=[
                         "rgb", "hsv_conic", "cielab", "c02_scd", "c16_scd",
@@ -508,11 +511,10 @@ def parse_args(argv=None):
                     help="Enable majority voting ensemble across a trio of color spaces (internally parallelized).")
     ap.add_argument("--ensemble_trio", type=str, default="ruderman_lab,oklab,jzczhz",
                     help="Comma separated trio for majority voting, default ruderman_lab,oklab,jzczhz.")
+    
+    # Parallel batch processing control
     ap.add_argument("--parallel", action="store_true",
                     help="Enable batch parallel processing of images (single color space mode only).")
-
-    ### Should be default
-    ap.add_argument("--max_workers", type=int, default=0, help="Workers for parallel mode, 0 picks os.cpu_count()")
 
     return ap.parse_args(argv)
 
@@ -545,8 +547,8 @@ def main(argv=None):
         print("Warning: --parallel is ignored when --enable_majority_vote is enabled (ensemble mode already parallelizes internally)")
 
     if args.parallel and not args.enable_majority_vote:
-        # Single color space mode with batch parallel processing
-        max_workers = args.max_workers if args.max_workers and args.max_workers > 0 else (os.cpu_count() or 4)
+        # Single color space mode with batch parallel processing (os.cpu_count() workers)
+        max_workers = os.cpu_count() or 4
         with ProcessPoolExecutor(max_workers=max_workers) as ex:
             futures = {
                 ex.submit(
@@ -639,7 +641,7 @@ def main(argv=None):
             "enable_majority_vote": bool(args.enable_majority_vote),
             "ensemble_trio": str(args.ensemble_trio),
             "parallel": bool(args.parallel),
-            "max_workers": int(args.max_workers if args.max_workers else (os.cpu_count() or 4) if args.parallel else 0),
+            "max_workers": 3 if args.enable_majority_vote else (os.cpu_count() or 4) if args.parallel else 1,
         },
         "timing_ms_avg": (float(np.mean(times_ms)) if times_ms else None)
     }
