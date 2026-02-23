@@ -708,6 +708,9 @@ def _process_single_image(ann_path: str,
         tie_map = {"first": 0, "second": 1, "third": 2}
         label_tie_pref = tie_map.get(ensemble_label_tie_strategy, 0)
 
+        """
+        Runs the majority voting ensemble across the specified trio of color spaces
+        """
         pred = run_one_vs_rest_majority_ensemble(
             img_rgb_u8=img_rgb,
             anns=anns,
