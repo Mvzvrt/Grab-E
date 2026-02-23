@@ -130,15 +130,9 @@ def load_anns(p: Path) -> np.ndarray:
     Warns:
         UserWarning: If annotation values are outside [0, NUM_VOC_CLASSES].
     """
-    ext = p.suffix.lower()
-    if ext == ".npy":
-        # Memory-mapped loading for large arrays
-        a = np.load(p, mmap_mode="r")
-        a = np.asarray(a, dtype=np.int32)
-    elif ext in (".png", ".bmp", ".tif", ".tiff"):
-        a = np.asarray(Image.open(p).convert("P"), dtype=np.int32)
-    else:
-        raise ValueError(f"Unsupported annotation format: {ext}")
+
+    a = np.load(p, mmap_mode="r")
+    a = np.asarray(a, dtype=np.int32)
 
     a_min = int(a.min()) if a.size else 0
     a_max = int(a.max()) if a.size else 0
