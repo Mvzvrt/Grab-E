@@ -271,6 +271,10 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
         y = mgc_post_smooth_mask(img_rgb_u8, y)
         fg_masks[c] = y # binary 0 or 1
 
+
+    """
+    Performs multiclass assembly
+    """
     final = _combine_fg_masks_to_final(fg_masks, anns, tie_mode)
     
     # Build return tuple based on what was requested
@@ -293,63 +297,137 @@ def _combine_fg_masks_to_final(fg_masks: Dict[int, np.ndarray],
                                anns: np.ndarray,
                                tie_mode: str = "nearest-scribble") -> np.ndarray:
     """
-    Combine per class binary masks into a final VOC index map, with tie handling.
+    Algorithm 1: Final Label Fusion via Majority Voting.
+    This function aggregates multiple binary s-t cuts into a single multiclass 
+    segmentation map, maintaining the O(K) linear complexity described in the paper.
     """
+    
+    # Algorithm 1, Line 1: Iterate through the set of labels L
     classes = sorted(fg_masks.keys())
     if not classes:
         H, W = anns.shape
         return np.zeros((H, W), dtype=np.uint8)
 
     H, W = anns.shape
+    
+    """
+    Algorithm 1, Line 22: Majority votes.
+    Collect individual binary segmentation results into a 3D volume to evaluate 
+    class assignments per pixel.
+    """
     stack = np.stack([fg_masks[c] for c in classes], axis=2)
+    
+    # Algorithm 1, Line 22: Count the number of labels assigned to each pixel (Ta)
     overlap_count = stack.sum(axis=2)
+    
+    # Check if any pixel has been claimed by more than one binary s-t cut
     any_overlap = (overlap_count > 1).any()
 
+    # Algorithm 1, Line 21: Initialize the final multi-class segmentation map S
     final = np.zeros((H, W), dtype=np.uint8)
 
+    """
+    Algorithm 1, Lines 25-27: Case where a unique majority exists (|I_max| == 1).
+    If only one binary s-t cut returns 'foreground' for a pixel, that specific 
+    label is assigned to the final segmentation map.
+    """
     if not any_overlap or tie_mode != "nearest-scribble":
+        # Iterate through each class to apply the binary foreground mask to the final result
         for c in classes:
+            # Create a boolean mask where the current class was predicted as foreground
             m = fg_masks[c] > 0
+            # Assign the class index (zero-indexed) to the final multiclass map
             final[m] = c - 1
+        # Return the resulting map if no overlaps need to be resolved via tie-breaking
         return final
 
-    # nearest scribble for overlapped pixels
+    """
+    EXTENSION/DEVIATION from Algorithm 1, Line 28:
+    The paper suggests using a regional classifier (Random Forest) to 
+    provide a probability p(alpha|xi) as a tie-breaker. 
+    
+    Our architecture extends this logic for Interactive GrabCut by using 
+    spatial distance to user scribbles as the confidence metric instead 
+    of a secondary classifier.
+    """
     overlap_mask = (overlap_count > 1)
 
     dist_to_scrib: Dict[int, np.ndarray] = {}
     classes_for_dt: List[int] = []
+    
+    # Calculate spatial confidence (Distance Transform) for each class
     for c in classes:
+        # Optimization: Only calculate distances for classes actually involved in a conflict
         if np.any(fg_masks[c] & overlap_mask):
+            
+            # Extract only the user-drawn seeds for this specific class
             s = (anns == c).astype(np.uint8)
+            
             if np.any(s):
+                """
+                OpenCV's distanceTransform measures distance to the nearest ZERO pixel.
+                To find distance to our seeds, we create a map where seeds are 0 
+                and background is 1.
+                """
                 ones = np.ones_like(s, dtype=np.uint8)
-                ones[s > 0] = 0
+                ones[s > 0] = 0 # Set seed locations to 0 (the targets)
+                
+                # Compute Euclidean distance map from every pixel to the nearest seed
                 d = cv.distanceTransform(ones, cv.DIST_L2, 3).astype(np.float32)
             else:
+                """
+                If a class was predicted by the GMM/GraphCut but has no seeds 
+                (e.g., from a previous frame's propagation), we assign a massive 
+                penalty distance (1e6) so it loses almost any tie-break.
+                """
                 d = np.full(s.shape, 1e6, dtype=np.float32)
+            
+            # Map the distance array to the class ID for lookup during the argmin phase
             dist_to_scrib[c] = d
+            # Keep track of which specific classes are competing in the stack
             classes_for_dt.append(c)
 
     if classes_for_dt:
+        """
+        Create a 3D volume where each layer is a distance map.
+        If a class didn't even claim a pixel in the binary mask (fg_masks[c] == 0), 
+        we set its distance to INF (1e9) so it is excluded from the competition.
+        """
         INF = 1e9
+
+        """
+        If current class c predicted a pixel as foreground (fg_masks[c] > 0), we take the distance to scribble for that class; otherwise, we set it to INF to exclude it from winning the tie-break for that pixel.
+        """
         dstack = np.stack(
             [np.where(fg_masks[c] > 0, dist_to_scrib[c], INF) for c in classes_for_dt],
             axis=2
         )
+        
+        # arg contains the integer index of the "winning" class (the one with the minimum distance)
         arg = np.argmin(dstack, axis=2)
 
+        # First, fill in labels for pixels where only one class was predicted
         for c in classes:
+            # Mask for pixels that are foreground for class 'c' AND have no overlap conflict
             m = (fg_masks[c] > 0) & (~overlap_mask)
             final[m] = c - 1
 
+        """
+        Now resolve conflicts: For each class that participated in the distance stack, 
+        identify pixels where that class had the minimum distance (arg == idx) 
+        and an overlap actually existed.
+        """
         for idx, c in enumerate(classes_for_dt):
+            # idx is the position in the stack; if arg == idx, this class 'c' is the closest
             m = overlap_mask & (arg == idx)
             final[m] = c - 1
     else:
+        # Fallback to standard majority assignment if no spatial data is available
         for c in classes:
             m = fg_masks[c] > 0
             final[m] = c - 1
 
+    # Algorithm 1, Line 32: Return the final multi-class segmentation S
     return final
 
 
