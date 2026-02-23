@@ -218,8 +218,7 @@ def opencv_grabcut_once(img_feats_u8: np.ndarray,
 
 def run_one_vs_rest(img_feats_u8: np.ndarray,
                     img_rgb_u8: np.ndarray,
-                    anns: np.ndarray,
-                    tie_mode: str = "nearest-scribble") -> np.ndarray:
+                    anns: np.ndarray) -> np.ndarray:
     """
     For each present class c > 1:
       FG seeds = anns == c
@@ -265,13 +264,12 @@ def run_one_vs_rest(img_feats_u8: np.ndarray,
     """
     Performs multiclass assembly
     """
-    final = _combine_fg_masks_to_final(fg_masks, anns, tie_mode)
+    final = _combine_fg_masks_to_final(fg_masks, anns)
     return final
 
 
 def _combine_fg_masks_to_final(fg_masks: Dict[int, np.ndarray],
-                               anns: np.ndarray,
-                               tie_mode: str = "nearest-scribble") -> np.ndarray:
+                               anns: np.ndarray) -> np.ndarray:
     """
     Algorithm 1: Final Label Fusion via Majority Voting.
     This function aggregates multiple binary s-t cuts into a single multiclass 
@@ -309,7 +307,7 @@ def _combine_fg_masks_to_final(fg_masks: Dict[int, np.ndarray],
     If only one binary s-t cut returns 'foreground' for a pixel, that specific 
     label is assigned to the final segmentation map.
     """
-    if not any_overlap or tie_mode != "nearest-scribble":
+    if not any_overlap:
         # Iterate through each class to apply the binary foreground mask to the final result
         for c in classes:
             # Create a boolean mask where the current class was predicted as foreground
@@ -414,7 +412,6 @@ def _combine_fg_masks_to_final(fg_masks: Dict[int, np.ndarray],
 def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
                                       anns: np.ndarray,
                                       trio: List[str],
-                                      tie_mode: str = "nearest-scribble",
                                       trio_parallel: bool = False) -> np.ndarray:
     """
     Majority voting ensemble over generated indexed masks, one per color space.
@@ -434,7 +431,7 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
 
     def _predict_for_space(cs: str) -> np.ndarray:
         feats = convert_color_space(img_rgb_u8, cs)
-        pred = run_one_vs_rest(feats, img_rgb_u8, anns, tie_mode=tie_mode)  # type: ignore
+        pred = run_one_vs_rest(feats, img_rgb_u8, anns)  # type: ignore
         return pred.astype(np.uint8, copy=False)
     
     """
@@ -457,7 +454,6 @@ def _process_single_image(ann_path: str,
                           images_dir: str,
                           output_dir: str,
                           color_space: str,
-                          tie_mode: str,
                           enable_majority_vote: bool,
                           ensemble_trio: str,
                           trio_parallel: bool) -> Dict[str, object]:
@@ -495,14 +491,12 @@ def _process_single_image(ann_path: str,
             img_rgb_u8=img_rgb,
             anns=anns,
             trio=trio,
-            tie_mode=tie_mode,
             trio_parallel=bool(trio_parallel)
         )
     else:
         img_feats = convert_color_space(img_rgb, color_space)
         pred = run_one_vs_rest(
-            img_feats, img_rgb, anns,
-            tie_mode=tie_mode
+            img_feats, img_rgb, anns
         )
 
     out_path = out_dir_p / f"{base}_index.png"
@@ -521,10 +515,6 @@ def parse_args(argv=None):
     ap.add_argument("--output_dir", type=str, required=True)
     ap.add_argument("--num_images", type=int, default=0, help="0 means all")
     ap.add_argument("--start_one", type=int, default=1, help="1 based index of first file")
-
-    ap.add_argument("--tie_mode", type=str, default="nearest-scribble",
-                    choices=["nearest-scribble", "first-wins"],
-                    help="How to resolve multi class overlaps")
 
     ap.add_argument("--color_space", type=str, default="rgb",
                     choices=[
@@ -579,7 +569,7 @@ def main(argv=None):
                 ex.submit(
                     _process_single_image,
                     str(ann_path), str(images_dir), str(out_dir),
-                    str(args.color_space), str(args.tie_mode),
+                    str(args.color_space),
                     bool(args.enable_majority_vote), str(args.ensemble_trio),
                     bool(trio_parallel_flag) and bool(args.enable_majority_vote)
                 ): ann_path for ann_path in ann_files
@@ -626,14 +616,12 @@ def main(argv=None):
                         img_rgb_u8=img_rgb,
                         anns=anns,
                         trio=trio,
-                        tie_mode=args.tie_mode,
                         trio_parallel=bool(trio_parallel_flag)
                     )
                 else:
                     img_feats = convert_color_space(img_rgb, args.color_space)
                     pred = run_one_vs_rest(
-                        img_feats, img_rgb, anns,
-                        tie_mode=args.tie_mode
+                        img_feats, img_rgb, anns
                     )
 
                 out_path = out_dir / f"{base}_index.png"
@@ -664,7 +652,7 @@ def main(argv=None):
         "skipped": skipped,
         "params": {
             "gc_iters": 5,
-            "tie_mode": args.tie_mode,
+            "tie_mode": "nearest-scribble",
             "color_space": args.color_space,
             "enable_majority_vote": bool(args.enable_majority_vote),
             "ensemble_trio": str(args.ensemble_trio),
