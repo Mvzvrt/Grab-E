@@ -411,12 +411,13 @@ def _combine_fg_masks_to_final(fg_masks: Dict[int, np.ndarray],
 
 def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
                                       anns: np.ndarray,
-                                      trio: List[str],
-                                      trio_parallel: bool = False) -> np.ndarray:
+                                      trio: List[str]) -> np.ndarray:
     """
     Majority voting ensemble over generated indexed masks, one per color space.
     For each color space, compute a full indexed mask via run_one_vs_rest, then vote on labels.
     Three-way ties default to the first color space in the trio.
+    
+    Automatically parallelizes across the three color space branches.
     """
     H, W = anns.shape
     classes = sorted([int(x) for x in np.unique(anns) if x > 1])
@@ -435,15 +436,12 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
         return pred.astype(np.uint8, copy=False)
     
     """
-    The entry point for the parallel processing of three color space branches
+    Parallel processing of three color space branches
     """
-    if trio_parallel:
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            futures = [ex.submit(_predict_for_space, cs) for cs in trio]
-            preds = [f.result() for f in futures]
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = [ex.submit(_predict_for_space, cs) for cs in trio]
+        preds = [f.result() for f in futures]
 
-    else:
-        preds = [_predict_for_space(cs) for cs in trio]
     out = majority_vote_indexed(preds[0], preds[1], preds[2], tie_pref=0)
     return out
 
@@ -453,11 +451,11 @@ def run_one_vs_rest_majority_ensemble(img_rgb_u8: np.ndarray,
 def _process_single_image(ann_path: str,
                           images_dir: str,
                           output_dir: str,
-                          color_space: str,
-                          enable_majority_vote: bool,
-                          ensemble_trio: str,
-                          trio_parallel: bool) -> Dict[str, object]:
-    """Worker function to process a single image, safe for ProcessPoolExecutor."""
+                          color_space: str) -> Dict[str, object]:
+    """
+    Worker function to process a single image in single color space mode.
+    Used by ProcessPoolExecutor for batch parallel processing.
+    """
     ann_p = Path(ann_path)
     images_dir_p = Path(images_dir)
     out_dir_p = Path(output_dir)
@@ -477,27 +475,8 @@ def _process_single_image(ann_path: str,
                          (img_rgb.shape[1], img_rgb.shape[0]), # cv.resize expects (width, height)
                          interpolation=cv.INTER_NEAREST)
 
-    # run either majority ensemble or single space
-    if enable_majority_vote:
-        trio = [s.strip() for s in (ensemble_trio if ensemble_trio else "ruderman_lab,oklab,jzczhz").split(",")]
-
-        if len(trio) != 3:
-            return {"ok": False, "base": base, "reason": "ensemble_trio must have exactly 3 entries"}
-
-        """
-        Runs the majority voting ensemble across the specified trio of color spaces
-        """
-        pred = run_one_vs_rest_majority_ensemble(
-            img_rgb_u8=img_rgb,
-            anns=anns,
-            trio=trio,
-            trio_parallel=bool(trio_parallel)
-        )
-    else:
-        img_feats = convert_color_space(img_rgb, color_space)
-        pred = run_one_vs_rest(
-            img_feats, img_rgb, anns
-        )
+    img_feats = convert_color_space(img_rgb, color_space)
+    pred = run_one_vs_rest(img_feats, img_rgb, anns)
 
     out_path = out_dir_p / f"{base}_index.png"
     save_indexed_png(pred, str(out_path))
@@ -526,10 +505,11 @@ def parse_args(argv=None):
 
     # majority voting ensemble controls
     ap.add_argument("--enable_majority_vote", action="store_true",
-                    help="Enable majority voting ensemble across a trio of color spaces for binary masks prior to class assignment.")
+                    help="Enable majority voting ensemble across a trio of color spaces (internally parallelized).")
     ap.add_argument("--ensemble_trio", type=str, default="ruderman_lab,oklab,jzczhz",
                     help="Comma separated trio for majority voting, default ruderman_lab,oklab,jzczhz.")
-    ap.add_argument("--parallel", action="store_true", help="Enable parallel processing of images")
+    ap.add_argument("--parallel", action="store_true",
+                    help="Enable batch parallel processing of images (single color space mode only).")
 
     ### Should be default
     ap.add_argument("--max_workers", type=int, default=0, help="Workers for parallel mode, 0 picks os.cpu_count()")
@@ -559,19 +539,20 @@ def main(argv=None):
     processed, skipped = 0, 0
     times_ms: List[float] = []
 
-    # Intra-image trio parallelization: parallelize when not running batch parallel
-    trio_parallel_flag = not bool(args.parallel)
+    # --parallel is only for single color space mode (batch image parallelization)
+    # --enable_majority_vote already parallelizes internally across three color space branches
+    if args.parallel and args.enable_majority_vote:
+        print("Warning: --parallel is ignored when --enable_majority_vote is enabled (ensemble mode already parallelizes internally)")
 
-    if args.parallel:
+    if args.parallel and not args.enable_majority_vote:
+        # Single color space mode with batch parallel processing
         max_workers = args.max_workers if args.max_workers and args.max_workers > 0 else (os.cpu_count() or 4)
         with ProcessPoolExecutor(max_workers=max_workers) as ex:
             futures = {
                 ex.submit(
                     _process_single_image,
                     str(ann_path), str(images_dir), str(out_dir),
-                    str(args.color_space),
-                    bool(args.enable_majority_vote), str(args.ensemble_trio),
-                    bool(trio_parallel_flag) and bool(args.enable_majority_vote)
+                    str(args.color_space)
                 ): ann_path for ann_path in ann_files
             }
             for fut in tqdm(as_completed(futures), total=len(futures), unit="img", desc="GrabCut[par]"):
@@ -589,7 +570,9 @@ def main(argv=None):
                     ann_path = futures[fut]
                     tqdm.write(f"[SKIP] {ann_path.name} {e}")
     else:
-        iterator = tqdm(ann_files, unit="img", desc="GrabCut")
+        # Sequential processing: either ensemble mode or single color space without --parallel
+        desc = "GrabCut[ensemble]" if args.enable_majority_vote else "GrabCut"
+        iterator = tqdm(ann_files, unit="img", desc=desc)
         for ann_path in iterator:
             base = base_from_ann_name(ann_path.stem)
             img_path = find_image(base, images_dir)
@@ -615,8 +598,7 @@ def main(argv=None):
                     pred = run_one_vs_rest_majority_ensemble(
                         img_rgb_u8=img_rgb,
                         anns=anns,
-                        trio=trio,
-                        trio_parallel=bool(trio_parallel_flag)
+                        trio=trio
                     )
                 else:
                     img_feats = convert_color_space(img_rgb, args.color_space)
