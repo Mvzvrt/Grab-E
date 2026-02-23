@@ -23,7 +23,7 @@ import cv2 as cv
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 from color_space import convert_color_space
-from mgc_api import mgc_refine_seeds, mgc_post_smooth_mask
+from mgc_api import _expand_seeds, _apply_guided_filter
 
 # Fix the model path to be absolute relative to repository root
 _REPO_ROOT = Path(__file__).parent.parent
@@ -266,7 +266,7 @@ class MultiClassSegmentationSession:
         # Apply seed refinement if enabled
         if self.apply_seed_refinement:
             try:
-                seeds_fg, seeds_bg = mgc_refine_seeds(
+                seeds_fg, seeds_bg = _expand_seeds(
                     self.img_rgb,
                     seeds_bg=seeds_bg,
                     seeds_fg=seeds_fg,
@@ -298,7 +298,7 @@ class MultiClassSegmentationSession:
         
         # Apply post-smoothing if enabled
         if self.apply_post_smoothing:
-            bin_mask = mgc_post_smooth_mask(
+            bin_mask = _apply_guided_filter(
                 self.img_rgb,
                 bin_mask,
                 guide_img=self.img_rgb,

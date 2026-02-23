@@ -50,7 +50,7 @@ def check_parent_modules():
     
     # Check mgc_api.py
     try:
-        from mgc_api import mgc_refine_seeds, mgc_post_smooth_mask
+        from mgc_api import _expand_seeds, _apply_guided_filter
         print(f"✓ mgc_api.py (parent directory)")
     except ImportError as e:
         print(f"✗ mgc_api.py: {e}")

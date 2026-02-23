@@ -44,8 +44,8 @@ from io_utils import load_anns
 from io_utils import load_img
 from io_utils import NUM_VOC_CLASSES
 from io_utils import save_indexed_png
-from mgc_api import mgc_post_smooth_mask
-from mgc_api import mgc_refine_seeds
+from mgc_api import _apply_guided_filter
+from mgc_api import _expand_seeds
 
 # ---------------------------------------------------------------------------
 # Module-level constants
@@ -256,7 +256,7 @@ def run_one_vs_rest(
         seeds_bg = (anns == 1) | ((anns > 1) & (anns != c))
 
         # Refine seeds via geodesic distance and GMM LAB confidence.
-        seeds_fg, seeds_bg = mgc_refine_seeds(
+        seeds_fg, seeds_bg = _expand_seeds(
             img_rgb_u8,
             seeds_bg=seeds_bg,
             seeds_fg=seeds_fg,
@@ -267,7 +267,7 @@ def run_one_vs_rest(
         y = opencv_grabcut_once(img_feats_u8, seeds_bg=seeds_bg, seeds_fg=seeds_fg)
 
         # Post-refinement using Guided Image Filtering.
-        y = mgc_post_smooth_mask(img_rgb_u8, y)
+        y = _apply_guided_filter(img_rgb_u8, y)
         fg_masks[c] = y  # Binary mask: 0 or 1
 
     # Assemble final multiclass map.

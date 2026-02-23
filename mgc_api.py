@@ -30,7 +30,7 @@ from typing import Tuple
 import numpy as np
 
 # Local application imports
-import mgc_core.modern_grabcut as mgc  # type: ignore
+import mgc_core.core as core  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ def _ensure_bool_mask(arr: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def mgc_refine_seeds(
+def _expand_seeds(
     img_rgb_u8: np.ndarray,
     seeds_bg: np.ndarray,
     seeds_fg: np.ndarray,
@@ -165,7 +165,7 @@ def mgc_refine_seeds(
     if _LAST_EDGE_KEY == cache_key and _LAST_EDGE_VALUE is not None:
         edge_map = _LAST_EDGE_VALUE
     else:
-        edge_map = mgc.edges_structured_forests(
+        edge_map = core.edges_structured_forests(
             img_rgb_u8,
             model_path=params["structured_model"],
         )
@@ -176,7 +176,7 @@ def mgc_refine_seeds(
     conf = conf_img if conf_img is not None else img_rgb_u8
 
     # Expand seeds geodesically with confidence gating.
-    refined_bg, refined_fg = mgc.expand_seeds(
+    refined_bg, refined_fg = core.expand_seeds(
         img_rgb=conf,
         E=edge_map,
         seeds_fg=_ensure_bool_mask(seeds_fg),
@@ -189,7 +189,7 @@ def mgc_refine_seeds(
     return refined_fg.astype(bool), refined_bg.astype(bool)
 
 
-def mgc_post_smooth_mask(
+def _apply_guided_filter(
     img_rgb_u8: np.ndarray,
     bin_mask01: np.ndarray,
 ) -> np.ndarray:
@@ -206,5 +206,5 @@ def mgc_post_smooth_mask(
     Returns:
         Refined binary mask, shape (H, W), dtype uint8 with values 0 or 1.
     """
-    smoothed = mgc.guided_snap(img_rgb_u8, bin_mask01)
+    smoothed = core.guided_snap(img_rgb_u8, bin_mask01)
     return (smoothed > 0).astype(np.uint8)
