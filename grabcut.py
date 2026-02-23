@@ -300,6 +300,8 @@ def _combine_fg_masks_to_final(fg_masks: Dict[int, np.ndarray],
     Algorithm 1: Final Label Fusion via Majority Voting.
     This function aggregates multiple binary s-t cuts into a single multiclass 
     segmentation map, maintaining the O(K) linear complexity described in the paper.
+
+    Source: Hu YC, Mageras G, Grossberg M. Multi-class medical image segmentation using one-vs-rest graph cuts and majority voting. J Med Imaging (Bellingham). 2021;8(3):034003. doi:10.1117/1.JMI.8.3.034003
     """
     
     # Algorithm 1, Line 1: Iterate through the set of labels L
