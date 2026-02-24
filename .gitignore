@@ -21,8 +21,9 @@ xyz/
 log_chroma/
 opponent/
 ycbcr_bt709/
-run_indv_exp.ps1
 diagram/
 diagrasfm/
 dist/
 build/
+run_ablation.ps1
+run_indv_exp.ps1
