@@ -575,7 +575,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument(
         "--ensemble_trio",
         type=str,
-        default="ruderman_lab,oklab,jzczhz",
+        default="ruderman_lab,jzazbz,oklch",
         help="Comma-separated trio for majority voting.",
     )
 
