@@ -80,6 +80,9 @@ def _seeds_confidence_lab(
     """
     Estimates pixel-wise foreground probability using Lab color distributions.
     Fits a single-component Gaussian to FG/BG seeds and computes a log-likelihood ratio.
+    Simplified version of the GMM used by GrabCut for speed and simplicity for a seed expansion use case.
+
+    Source: https://github.com/opencv/opencv/blob/4.x/modules/imgproc/src/grabcut.cpp#L60
     """
     if not np.any(seeds_fg):
         empty = np.zeros(img_rgb.shape[:2], dtype=bool)
@@ -89,18 +92,30 @@ def _seeds_confidence_lab(
     lab = cv.cvtColor(img_rgb, cv.COLOR_RGB2Lab).astype(np.float32)
 
     # Sample color values at user seed locations
+    # Aligns with Lines 374 - 385
     xs, ys = np.where(seeds_fg)
     fg_samples = lab[xs, ys] if xs.size else lab[seeds_fg]
     bg_samples = lab[seeds_bg] if np.any(seeds_bg) else lab[~seeds_fg]
 
     # Calculate mean color and variance for foreground and background classes
+    # Aligns with Lines 191 - 192
     mu_f = fg_samples.mean(axis=0)
     mu_b = bg_samples.mean(axis=0) if bg_samples.size else mu_f + 1.0
 
+    # Aligns with Lines 194 - 197
     sf = np.var(fg_samples, axis=0).mean() + 1e-3
     sb = (np.var(bg_samples, axis=0).mean() + 1e-3) if bg_samples.size else sf * 4
 
     def _gauss_ll(x: np.ndarray, mu: np.ndarray, s: float) -> np.ndarray:
+        """
+        Calculates the Log-Likelihood of the Gaussian distribution.
+        
+        Equivalence to GrabCut (grabcut.cpp):
+        In GrabCut, 'mult' represents the Mahalanobis Distance: (x-μ)ᵀ Σ⁻¹ (x-μ).
+        By assuming a spherical covariance Σ (variance 's' in all directions), 
+        Σ⁻¹ becomes the scalar 1/s. The formula collapses to:
+        Σ(x_i - μ_i)² / s, which is exactly np.sum((x - mu) ** 2) / s.
+        """
         return -0.5 * np.sum((x - mu) ** 2, axis=2) / float(s)
 
     # Compute color-based log-likelihood ratio
