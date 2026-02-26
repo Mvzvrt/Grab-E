@@ -213,14 +213,14 @@ class MainWindow(QMainWindow):
         self.next_class_id = 1  # Start from 1 (background)
         
         # UI setup
-        self.setWindowTitle("Interactive GrabCut Segmentation")
+        self.setWindowTitle("Grab-E")
         
         # Apply modern stylesheet
         self._apply_stylesheet()
         
         self._create_menu_bar()
         self._create_toolbar()
-        self._create_central_widget()
+        self._create_central_widget() # Initiates the canvas_widget for scribbles handling
         self._create_dock_widgets()
         self._create_status_bar()
         
@@ -769,6 +769,7 @@ class MainWindow(QMainWindow):
         # File menu
         file_menu = menubar.addMenu("&File")
         
+        # Image handling
         open_action = QAction("&Open Image...", self)
         open_action.setShortcut(QKeySequence.Open)
         open_action.triggered.connect(self._open_image)
@@ -1152,10 +1153,10 @@ class MainWindow(QMainWindow):
             for cs in color_spaces:
                 combo.addItem(cs, cs)
         
-        # Set defaults: ruderman_lab, oklab, jzczhz (top performing combination)
+        # Set defaults: ruderman_lab, jzazbz, oklch (top performing combination)
         self.ensemble_combo1.setCurrentText("ruderman_lab")
-        self.ensemble_combo2.setCurrentText("oklab")
-        self.ensemble_combo3.setCurrentText("jzczhz")
+        self.ensemble_combo2.setCurrentText("jzazbz")
+        self.ensemble_combo3.setCurrentText("oklch")
         
         ensemble_layout.addWidget(QLabel("Color Space 1:"))
         ensemble_layout.addWidget(self.ensemble_combo1)

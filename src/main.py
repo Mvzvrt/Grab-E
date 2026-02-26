@@ -2,7 +2,7 @@
 # Filename: main.py
 # -*- coding: utf-8 -*-
 """
-Interactive GrabCut Segmentation Application Entry Point
+Interactive Grab-E Application Entry Point
 """
 
 import sys
@@ -18,8 +18,8 @@ from main_window import MainWindow
 def main():
     """Main application entry point."""
     app = QApplication(sys.argv)
-    app.setApplicationName("Interactive GrabCut Segmentation")
-    app.setOrganizationName("GrabCut Research")
+    app.setApplicationName("Grab-E Tool")
+    app.setOrganizationName("Grab-E Research")
     
     # Create and show main window
     window = MainWindow()
