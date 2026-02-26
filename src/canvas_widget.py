@@ -91,7 +91,7 @@ class CanvasWidget(QWidget):
         self.is_drawing = False
         self.current_stroke_points: List[QPoint] = []
         self.current_class = 1  # Start with background by default
-        self.brush_size = 5
+        self.brush_size = 3 # Taken from the average thickness of scribbles in the s4Pascal dataset
         self.eraser_mode = False
         
         # View transformation

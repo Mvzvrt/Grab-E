@@ -301,8 +301,6 @@ class MultiClassSegmentationSession:
             bin_mask = _apply_guided_filter(
                 self.img_rgb,
                 bin_mask,
-                guide_img=self.img_rgb,
-                structured_model=_STRUCTURED_MODEL_PATH
             )
         
         state.current_mask = bin_mask

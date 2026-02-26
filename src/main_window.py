@@ -153,11 +153,7 @@ class EnsembleSegmentationWorker(QThread):
             
             color_spaces = self.ensemble_session.color_spaces
             
-            # Progress for each color space
-            self.progress.emit(10, f"Color space 1: {color_spaces[0]}...")
-            self.progress.emit(40, f"Color space 2: {color_spaces[1]}...")
-            self.progress.emit(70, f"Color space 3: {color_spaces[2]}...")
-            self.progress.emit(90, "Majority voting...")
+            self.progress.emit(50, "Running color space branches in parallel...")
             
             # Run ensemble segmentation
             final_mask = self.ensemble_session.segment_all_classes(force_reinit=self.force_reinit)
@@ -858,7 +854,12 @@ class MainWindow(QMainWindow):
         
         open_btn = QPushButton("Open Image")
         open_btn.setObjectName("primaryButton")
+
+        """
+        Where MultiClassSegmentationSession and EnsembleSegmentationSession are initialized at first.
+        """
         open_btn.clicked.connect(self._open_image)
+
         open_btn.setToolTip("Step 1: Load an image to segment")
         toolbar.addWidget(open_btn)
         
