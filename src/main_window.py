@@ -153,11 +153,12 @@ class EnsembleSegmentationWorker(QThread):
             
             color_spaces = self.ensemble_session.color_spaces
             
-            self.progress.emit(50, "Running color space branches in parallel...")
+            self.progress.emit(10, f"Processing {len(color_spaces)} color spaces in parallel...")
             
             # Run ensemble segmentation
             final_mask = self.ensemble_session.segment_all_classes(force_reinit=self.force_reinit)
             
+            self.progress.emit(90, "Applying majority voting...")
             self.progress.emit(100, "Complete!")
             
             # Collect metrics

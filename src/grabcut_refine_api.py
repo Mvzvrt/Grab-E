@@ -13,6 +13,7 @@ This module extends the base grabcut.py functionality to support:
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 
@@ -646,12 +647,20 @@ class EnsembleSegmentationSession:
         Returns:
             HxW uint8 final ensemble mask
         """
-        masks = []
+        # Segment with each color space session in parallel
+        masks = [None, None, None]  # Pre-allocate to preserve order
         
-        # Segment with each color space session
-        for session in self.sessions:
-            mask = session.segment_all_classes(force_reinit=force_reinit)
-            masks.append(mask)
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            # Submit all segmentation tasks
+            future_to_index = {
+                executor.submit(session.segment_all_classes, force_reinit): idx
+                for idx, session in enumerate(self.sessions)
+            }
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_index):
+                idx = future_to_index[future]
+                masks[idx] = future.result()  # Will raise exception if task failed
         
         # Majority vote
         self.final_mask = majority_vote_indexed(
