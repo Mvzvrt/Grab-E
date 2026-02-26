@@ -128,6 +128,9 @@ def edges_structured_forests(
     """
     Detects semantic boundaries using Structured Edge Forests (SED).
     Pre-processes input, runs inference, and applies non-maximum suppression (NMS).
+    
+    Source: https://github.com/opencv/opencv_contrib/blob/4.x/modules/ximgproc/samples/edgeboxes_demo.py
+    Model: https://github.com/opencv/opencv_extra/tree/master/testdata/cv/ximgproc
     """
     if not model_path or not Path(model_path).exists():
         raise FileNotFoundError(
@@ -146,9 +149,7 @@ def edges_structured_forests(
     if hasattr(sed, "edgesNms"):
         edge = sed.edgesNms(edge, orient)
 
-    # Max-normalize the edge map to create a relative cost surface
-    max_val = float(edge.max()) + 1e-6
-    return (edge / max_val).astype(np.float32, copy=False)
+    return edge
 
 
 def expand_seeds(
