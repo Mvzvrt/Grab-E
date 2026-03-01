@@ -103,6 +103,7 @@ def _seeds_confidence_lab(
     mu_b = bg_samples.mean(axis=0) if bg_samples.size else mu_f + 1.0
 
     # Aligns with Lines 194 - 197
+    # Effectively assume a perfect sphere for computational efficiency vs. ellipsoidal GMM covariance.
     sf = np.var(fg_samples, axis=0).mean() + 1e-3
     sb = (np.var(bg_samples, axis=0).mean() + 1e-3) if bg_samples.size else sf * 4
 
@@ -116,6 +117,7 @@ def _seeds_confidence_lab(
         Σ⁻¹ becomes the scalar 1/s. The formula collapses to:
         Σ(x_i - μ_i)² / s, which is exactly np.sum((x - mu) ** 2) / s.
         """
+        
         return -0.5 * np.sum((x - mu) ** 2, axis=2) / float(s)
 
     # Compute color-based log-likelihood ratio
@@ -153,7 +155,7 @@ def edges_structured_forests(
         )
 
     # Normalize image and convert to BGR for SED library
-    rgb = cv.cvtColor(img_rgb, cv.COLOR_RGB2BGR).astype(np.float32) / 255.0
+    rgb = img_rgb.astype(np.float32) / 255.0
     sed = _get_sed(model_path)
     
     # Compute probability and orientation maps

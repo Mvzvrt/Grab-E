@@ -194,7 +194,6 @@ def run_one_vs_rest(
 
     return _combine_fg_masks_to_final(fg_masks, anns)
 
-
 def _combine_fg_masks_to_final(
     fg_masks: Dict[int, np.ndarray],
     anns: np.ndarray,
