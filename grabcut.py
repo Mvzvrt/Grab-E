@@ -182,7 +182,6 @@ def run_one_vs_rest(
             img_rgb_u8,
             seeds_bg=seeds_bg,
             seeds_fg=seeds_fg,
-            conf_img=img_feats_u8,
         )
 
         # Compute binary foreground mask for current class

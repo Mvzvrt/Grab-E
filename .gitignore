@@ -26,3 +26,5 @@ diagrasfm/
 dist/
 build/
 scripts/
+cs/
+visualize_cs.py

@@ -271,7 +271,6 @@ class MultiClassSegmentationSession:
                     self.img_rgb,
                     seeds_bg=seeds_bg,
                     seeds_fg=seeds_fg,
-                    conf_img=self.img_feats,
                     structured_model=_STRUCTURED_MODEL_PATH
                 )
             except Exception as e:

@@ -76,7 +76,6 @@ def _expand_seeds(
     img_rgb_u8: np.ndarray,
     seeds_bg: np.ndarray,
     seeds_fg: np.ndarray,
-    conf_img: np.ndarray | None = None,
     **kwargs: Any,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -109,13 +108,11 @@ def _expand_seeds(
 
     # Apply core expansion logic in C++ extension
     refined_bg, refined_fg = core.expand_seeds(
-        img_rgb=img_rgb_u8,
         E=edge_map,
         seeds_fg=_ensure_bool_mask(seeds_fg),
         seeds_bg=_ensure_bool_mask(seeds_bg),
         r_geo=int(params["geo_radius"]),
         edge_alpha=float(params["edge_alpha"]),
-        conf_tau=float(params["conf_tau"]),
     )
 
     return refined_fg.astype(bool), refined_bg.astype(bool)
