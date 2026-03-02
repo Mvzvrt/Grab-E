@@ -198,8 +198,8 @@ def _combine_fg_masks_to_final(
     anns: np.ndarray,
 ) -> np.ndarray:
     """
-    Fuses class-specific binary masks into a unified multi-class map. 
-    If pixels are claimed by multiple classes, resolve via spatial distance to user seeds.
+    Fuses class-specific masks via one-vs-rest voting.
+    Ties/conflicts are resolved by spatial proximity to user seeds.
     """
     classes = sorted(fg_masks.keys())
     if not classes:
@@ -207,70 +207,37 @@ def _combine_fg_masks_to_final(
         return np.zeros((h, w), dtype=np.uint8)
 
     h, w = anns.shape
-
-    # Determine pixel-wise label assignment counts
-    stack = np.stack([fg_masks[c] for c in classes], axis=2)
-    overlap_count = stack.sum(axis=2)
-    any_overlap = (overlap_count > 1).any()
-
-    final = np.zeros((h, w), dtype=np.uint8)
-
-    # Simplified case: each pixel belongs to at most one class
-    if not any_overlap:
-        for c in classes:
-            m = fg_masks[c] > 0
-            final[m] = c - 1
-        return final
-
-    # Complex case: resolve class overlaps via spatial proximity to user scribbles
-    overlap_mask = overlap_count > 1
-    dist_to_scrib: Dict[int, np.ndarray] = {}
-    classes_for_dt: List[int] = []
-
-    for c in classes:
-        if not np.any(fg_masks[c] & overlap_mask):
-            continue
-
-        s = (anns == c).astype(np.uint8)
-
-        if np.any(s):
-            # Distance transform to nearest zero (seed location)
-            ones = np.ones_like(s, dtype=np.uint8)
-            ones[s > 0] = 0
-            d = cv.distanceTransform(ones, cv.DIST_L2, 3).astype(np.float32)
+    num_classes = len(classes)
+    
+    # 1. Tally class-specific votes (Foreground acts as the vote leader)
+    fg_stack = np.stack([fg_masks[c] for c in classes], axis=2).astype(np.float32)
+    
+    # 2. Compute spatial distance to seeds as a confidence proxy
+    dist_stack = np.zeros((h, w, num_classes), dtype=np.float32)
+    for i, c in enumerate(classes):
+        seeds = (anns == c).astype(np.uint8)
+        if np.any(seeds):
+            # Distance transform to nearest scribble location
+            dist_stack[:, :, i] = cv.distanceTransform(
+                (1 - (seeds > 0).astype(np.uint8)), 
+                cv.DIST_L2, 
+                3
+            )
         else:
-            # Penalize classes without seeds
-            d = np.full(s.shape, NO_SEED_PENALTY, dtype=np.float32)
+            dist_stack[:, :, i] = NO_SEED_PENALTY
 
-        dist_to_scrib[c] = d
-        classes_for_dt.append(c)
+    # 3. Resolve winners: max(Vote), then min(Distance)
+    VOTE_WEIGHT = 1e9 
+    score_stack = (fg_stack * VOTE_WEIGHT) - dist_stack
+    winner_indices = np.argmax(score_stack, axis=2)
+    
+    # 4. Map indices back to labels
+    label_map = np.array([c - 1 for c in classes], dtype=np.uint8)
+    final = label_map[winner_indices]
 
-    if classes_for_dt:
-        # Select winning class based on minimum distance to seeds
-        dstack = np.stack(
-            [
-                np.where(fg_masks[c] > 0, dist_to_scrib[c], TIE_BREAK_INFINITY)
-                for c in classes_for_dt
-            ],
-            axis=2,
-        )
-
-        arg = np.argmin(dstack, axis=2)
-
-        # First, fill pixels without overlaps
-        for c in classes:
-            m = (fg_masks[c] > 0) & (~overlap_mask)
-            final[m] = c - 1
-
-        # Then, fill pixels with overlaps using distance winners
-        for idx, c in enumerate(classes_for_dt):
-            m = overlap_mask & (arg == idx)
-            final[m] = c - 1
-    else:
-        # Fallback to simple majority if distance resolution fails
-        for c in classes:
-            m = fg_masks[c] > 0
-            final[m] = c - 1
+    # 5. Background Consistency: pixels unclaimed by any class return to BG (0)
+    claim_count = fg_stack.sum(axis=2)
+    final[claim_count == 0] = 0 
 
     return final
 
