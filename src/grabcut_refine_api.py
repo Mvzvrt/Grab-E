@@ -353,7 +353,7 @@ class MultiClassSegmentationSession:
         if not (overlap_count > 1).any() or self.tie_mode != "nearest-scribble":
             for c in classes:
                 m = fg_masks[c] > 0
-                final[m] = c  # Preserve class ID as-is in output
+                final[m] = c - 1  # class_id 2 -> label 1, etc.
             return final
         
         # Resolve overlaps using nearest-scribble
@@ -385,16 +385,16 @@ class MultiClassSegmentationSession:
             # Assign non-overlapping pixels
             for c in classes:
                 m = (fg_masks[c] > 0) & (~overlap_mask)
-                final[m] = c
+                final[m] = c - 1  # class_id 2 -> label 1, etc.
             
             # Assign overlapping pixels to nearest scribble
             for idx, c in enumerate(classes_for_dt):
                 m = overlap_mask & (arg == idx)
-                final[m] = c
+                final[m] = c - 1  # class_id 2 -> label 1, etc.
         else:
             for c in classes:
                 m = fg_masks[c] > 0
-                final[m] = c
+                final[m] = c - 1  # class_id 2 -> label 1, etc.
         
         return final
     

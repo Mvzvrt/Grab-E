@@ -1554,18 +1554,18 @@ class MainWindow(QMainWindow):
     def _build_custom_palette(self):
         """Build a 256-color palette based on user's chosen class colors.
         
-        Note: Segmentation mask values now equal class IDs directly (no offset).
+        Note: Segmentation mask values are labels = class_id - 1.
         """
         # Create a palette array (256 colors x 3 RGB values = 768 values)
         palette = np.zeros(768, dtype=np.uint8)
         
         # Set colors for each class based on user's choices
-        # Mask value equals class_id directly
+        # Mask label = class_id - 1, so palette index = (class_id - 1)
         for class_id, class_info in self.classes.items():
-            if class_id < 256:  # Palette can only hold 256 colors
+            label = class_id - 1
+            if 0 <= label < 256:  # Palette can only hold 256 colors
                 color = class_info["color"]
-                # Use class_id directly as palette index
-                idx = class_id * 3
+                idx = label * 3
                 palette[idx] = color.red()
                 palette[idx + 1] = color.green()
                 palette[idx + 2] = color.blue()
