@@ -38,7 +38,7 @@ setup(
     name="fastgeo",
     version="0.1.0",
     author="you",
-    description="Fast geodesic distance for Modern GrabCut",
+    description="Fast geodesic distance using Djikstra's algorithm with edge costs",
     ext_modules=ext_modules,
     cmdclass={"build_ext": BuildExt},
     zip_safe=False,
