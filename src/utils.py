@@ -4,6 +4,9 @@
 Utility functions for the Interactive GrabCut application
 """
 
+import ctypes
+import sys
+
 import numpy as np
 from PIL import Image
 
@@ -51,3 +54,28 @@ def load_indexed_png(path: str) -> np.ndarray:
     """
     img = Image.open(path).convert("P")
     return np.array(img, dtype=np.uint8)
+
+
+def enable_windows_dark_title_bar(widget) -> None:
+    """Enable immersive dark mode for a top-level Qt window title bar on Windows."""
+    if sys.platform != "win32":
+        return
+
+    try:
+        hwnd = int(widget.winId())
+        set_attr = ctypes.windll.dwmapi.DwmSetWindowAttribute
+        value = ctypes.c_int(1)
+
+        # Try modern attribute first (20), then legacy fallback (19).
+        for attr in (20, 19):
+            result = set_attr(
+                ctypes.c_void_p(hwnd),
+                ctypes.c_uint(attr),
+                ctypes.byref(value),
+                ctypes.sizeof(value),
+            )
+            if result == 0:
+                break
+    except Exception:
+        # Best effort only: keep app running even if OS/API support is unavailable.
+        pass

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from how_to_use_page import HowToUsePage
 from main_window import MainWindow
+from utils import enable_windows_dark_title_bar
 
 
 class SplashScreen(QWidget):
@@ -58,12 +59,18 @@ class SplashScreen(QWidget):
         layout.setContentsMargins(32, 36, 32, 32)
         layout.setSpacing(8)
 
+        content_group = QWidget()
+        content_layout = QVBoxLayout(content_group)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(8)
+        content_layout.setAlignment(Qt.AlignHCenter)
+
         logo_path = self.assets_dir / "splash-screen-logo.svg"
         if logo_path.exists():
             self.hero_logo = QSvgWidget(str(logo_path))
             # Keep square dimensions to avoid distorting the 2000x2000 SVG.
             self.hero_logo.setFixedSize(840, 420)
-            layout.addWidget(self.hero_logo, alignment=Qt.AlignTop | Qt.AlignHCenter)
+            content_layout.addWidget(self.hero_logo, alignment=Qt.AlignHCenter)
 
         self.start_btn = QPushButton("Open new image")
         self.start_btn.setObjectName("actionTextButton")
@@ -94,9 +101,14 @@ class SplashScreen(QWidget):
         button_layout.addLayout(self._create_inline_action_row(self.start_icon_btn, self.start_btn))
         button_layout.addLayout(self._create_inline_action_row(self.how_to_use_icon_btn, self.how_to_use_btn))
 
-        layout.addSpacing(0)
-        layout.addWidget(button_group, alignment=Qt.AlignHCenter)
+        content_layout.addWidget(button_group, alignment=Qt.AlignHCenter)
+
         layout.addStretch()
+        layout.addWidget(content_group, alignment=Qt.AlignCenter)
+        layout.addStretch()
+
+        self.winId()
+        enable_windows_dark_title_bar(self)
 
     def _create_icon_button(self, icon_path: Path, callback):
         """Create a flat clickable icon button for a splash action."""
@@ -129,8 +141,17 @@ class SplashScreen(QWidget):
         self.close()
 
     def _open_how_to_use(self):
-        """Open the placeholder how-to-use page."""
-        self.how_to_use_window = HowToUsePage()
+        """Open how-to-use page and keep splash available for back navigation."""
+        self.hide()
+        self.how_to_use_window = HowToUsePage(
+            on_back=self._return_from_how_to_use,
+            back_icon_path=self.assets_dir / "arrow_back.svg",
+        )
         self.how_to_use_window.setWindowIcon(self.windowIcon())
         self.how_to_use_window.showMaximized()
-        self.close()
+
+    def _return_from_how_to_use(self):
+        """Show splash screen again after closing the how-to-use page."""
+        self.showMaximized()
+        self.raise_()
+        self.activateWindow()

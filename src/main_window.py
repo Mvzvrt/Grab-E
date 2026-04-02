@@ -33,7 +33,7 @@ from grabcut_refine_api import (
     EnsembleSegmentationSession,
     segment_all_classes_ensemble
 )
-from utils import voc_palette
+from utils import enable_windows_dark_title_bar, voc_palette
 
 # Import from parent directory
 import sys
@@ -225,6 +225,9 @@ class MainWindow(QMainWindow):
         self._initialize_default_classes()
         
         self._update_ui_state()
+
+        self.winId()
+        enable_windows_dark_title_bar(self)
         
         # Start maximized after all UI is constructed
         self.showMaximized()
