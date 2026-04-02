@@ -855,7 +855,7 @@ class MainWindow(QMainWindow):
         """
         open_btn.clicked.connect(self._open_image)
 
-        open_btn.setToolTip("Step 1: Load an image to segment")
+        open_btn.setToolTip("Load an image from computer")
         toolbar.addWidget(open_btn)
         
         toolbar.addSeparator()
@@ -865,7 +865,7 @@ class MainWindow(QMainWindow):
         self.segment_btn.setObjectName("primaryButton")
         self.segment_btn.clicked.connect(self._run_segmentation)
         self.segment_btn.setEnabled(False)
-        self.segment_btn.setToolTip("Step 3/6: Run segmentation with current scribbles")
+        self.segment_btn.setToolTip("Run segmentation with current scribbles")
         toolbar.addWidget(self.segment_btn)
         
         # Step 8: Refine segmentation
@@ -873,7 +873,7 @@ class MainWindow(QMainWindow):
         self.refine_btn.setObjectName("secondaryButton")
         self.refine_btn.clicked.connect(lambda: self._run_segmentation(refine=True))
         self.refine_btn.setEnabled(False)
-        self.refine_btn.setToolTip("Step 8: Refine segmentation (keeps existing models)")
+        self.refine_btn.setToolTip("Refine segmentation (keeps existing models)")
         toolbar.addWidget(self.refine_btn)
         
         toolbar.addSeparator()
@@ -881,13 +881,13 @@ class MainWindow(QMainWindow):
         # Step 9: Save results
         save_btn = QPushButton("Save Mask")
         save_btn.clicked.connect(self._save_mask)
-        save_btn.setToolTip("Step 9: Export segmentation mask")
+        save_btn.setToolTip("Export segmentation mask")
         toolbar.addWidget(save_btn)
 
         # Save scribbles before segmentation/refine
         save_scribbles_btn = QPushButton("Save Scribbles")
         save_scribbles_btn.clicked.connect(self._save_scribbles)
-        save_scribbles_btn.setToolTip("Save current scribbles to PNG/NPY before processing")
+        save_scribbles_btn.setToolTip("Save current scribbles as .png")
         toolbar.addWidget(save_scribbles_btn)
         
         toolbar.addSeparator()
