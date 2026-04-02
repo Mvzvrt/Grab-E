@@ -1221,6 +1221,10 @@ class MainWindow(QMainWindow):
         
         # Refine button enabled when we have existing segmentation in either mode
         self.refine_btn.setEnabled(has_segmentation)
+
+    def start_with_new_image(self):
+        """Open the image picker after the main window is shown."""
+        QTimer.singleShot(0, self._open_image)
     
     def _open_image(self):
         """Open an image file."""
