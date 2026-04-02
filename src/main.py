@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
-from main_window import MainWindow
+from splash_screen import SplashScreen
 
 
 def main():
@@ -32,10 +32,10 @@ def main():
                 app.setWindowIcon(icon)
                 break
     
-    # Create and show main window
-    window = MainWindow()
+    # Create and show splash screen
+    window = SplashScreen()
     window.setWindowIcon(app.windowIcon())
-    window.show()
+    window.showMaximized()
     
     # Run event loop
     sys.exit(app.exec())
