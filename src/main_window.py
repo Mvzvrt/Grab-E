@@ -1875,7 +1875,7 @@ class MainWindow(QMainWindow):
         class_id, ok = QInputDialog.getInt(
             self,
             "Add New Class - Step 2/3",
-            f"Enter class label index (2-50):\n\nUsed IDs: {used_ids_str}\n\nNote: Class ID 2 = Label 1, ID 3 = Label 2, etc.",
+            f"Choose class ID (2-50).\n\nUsed IDs: {used_ids_str}\nOutput mask label = class ID - 1.",
             suggested_id,  # value
             2,             # minValue
             50,            # maxValue
