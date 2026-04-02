@@ -1010,12 +1010,12 @@ class MainWindow(QMainWindow):
         clear_scribbles_btn.setToolTip("Remove all drawn scribbles")
         draw_tools_layout.addWidget(clear_scribbles_btn)
         
-        # Metrics mode toggle
-        self.metrics_checkbox = QCheckBox("Enable Metrics Mode")
-        self.metrics_checkbox.setChecked(False)
-        self.metrics_checkbox.toggled.connect(self._on_metrics_toggled)
-        self.metrics_checkbox.setToolTip("Track processing time and peak RAM for each segment/refine operation")
-        draw_tools_layout.addWidget(self.metrics_checkbox)
+        # Metrics mode toggle (hidden for now)
+        # self.metrics_checkbox = QCheckBox("Enable Metrics Mode")
+        # self.metrics_checkbox.setChecked(False)
+        # self.metrics_checkbox.toggled.connect(self._on_metrics_toggled)
+        # self.metrics_checkbox.setToolTip("Track processing time and peak RAM for each segment/refine operation")
+        # draw_tools_layout.addWidget(self.metrics_checkbox)
         
         # View metrics button
         self.view_metrics_btn = QPushButton("View Metrics")
@@ -1185,7 +1185,7 @@ class MainWindow(QMainWindow):
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setMinimum(0)
         self.opacity_slider.setMaximum(100)
-        self.opacity_slider.setValue(75)
+        self.opacity_slider.setValue(50)
         self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
         opacity_layout.addWidget(self.opacity_slider)
         
