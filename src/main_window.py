@@ -847,12 +847,6 @@ class MainWindow(QMainWindow):
         toolbar.setIconSize(QSize(24, 24))
         self.addToolBar(toolbar)
         
-        # Step 1: Open image
-        workflow_label = QLabel("Workflow:")
-        workflow_label.setObjectName("headerLabel")
-        workflow_label.setStyleSheet("padding: 0px 8px;")
-        toolbar.addWidget(workflow_label)
-        
         open_btn = QPushButton("Open Image")
         open_btn.setObjectName("primaryButton")
 
@@ -861,16 +855,8 @@ class MainWindow(QMainWindow):
         """
         open_btn.clicked.connect(self._open_image)
 
-        open_btn.setToolTip("Step 1: Load an image to segment")
+        open_btn.setToolTip("Load an image from computer")
         toolbar.addWidget(open_btn)
-        
-        toolbar.addSeparator()
-        
-        # Step 2-7: Draw scribbles (handled in side panel)
-        draw_label = QLabel("Draw Scribbles")
-        draw_label.setObjectName("hintLabel")
-        draw_label.setStyleSheet("padding: 0px 4px;")
-        toolbar.addWidget(draw_label)
         
         toolbar.addSeparator()
         
@@ -879,7 +865,7 @@ class MainWindow(QMainWindow):
         self.segment_btn.setObjectName("primaryButton")
         self.segment_btn.clicked.connect(self._run_segmentation)
         self.segment_btn.setEnabled(False)
-        self.segment_btn.setToolTip("Step 3/6: Run segmentation with current scribbles")
+        self.segment_btn.setToolTip("Run segmentation with current scribbles")
         toolbar.addWidget(self.segment_btn)
         
         # Step 8: Refine segmentation
@@ -887,7 +873,7 @@ class MainWindow(QMainWindow):
         self.refine_btn.setObjectName("secondaryButton")
         self.refine_btn.clicked.connect(lambda: self._run_segmentation(refine=True))
         self.refine_btn.setEnabled(False)
-        self.refine_btn.setToolTip("Step 8: Refine segmentation (keeps existing models)")
+        self.refine_btn.setToolTip("Refine segmentation (keeps existing models)")
         toolbar.addWidget(self.refine_btn)
         
         toolbar.addSeparator()
@@ -895,13 +881,13 @@ class MainWindow(QMainWindow):
         # Step 9: Save results
         save_btn = QPushButton("Save Mask")
         save_btn.clicked.connect(self._save_mask)
-        save_btn.setToolTip("Step 9: Export segmentation mask")
+        save_btn.setToolTip("Export segmentation mask")
         toolbar.addWidget(save_btn)
 
         # Save scribbles before segmentation/refine
         save_scribbles_btn = QPushButton("Save Scribbles")
         save_scribbles_btn.clicked.connect(self._save_scribbles)
-        save_scribbles_btn.setToolTip("Save current scribbles to PNG/NPY before processing")
+        save_scribbles_btn.setToolTip("Save current scribbles as .png")
         toolbar.addWidget(save_scribbles_btn)
         
         toolbar.addSeparator()
@@ -932,7 +918,7 @@ class MainWindow(QMainWindow):
         """Create dockable control panels organized by workflow."""
         
         # LEFT PANEL: Drawing and Class Management (Steps 2-7)
-        draw_dock = QDockWidget("Drawing & Classification", self)
+        draw_dock = QDockWidget("Main Panel", self)
         draw_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         
         # Create scrollable area for left panel
@@ -944,31 +930,13 @@ class MainWindow(QMainWindow):
         draw_layout = QVBoxLayout()
         draw_layout.setSpacing(12)
         
-        # Workflow guide at top
-        workflow_guide = QLabel(
-            "<b>Workflow Guide:</b><br>"
-            "1. Open Image<br>"
-            "2. Add Classes (objects to segment)<br>"
-            "3. Draw Scribbles per class<br>"
-            "4. Click Segment<br>"
-            "5. Add more classes if needed<br>"
-            "6. Add Background scribbles<br>"
-            "7. Click Segment again<br>"
-            "8. Add refinement scribbles<br>"
-            "9. Click Refine<br>"
-            "10. Save Mask"
-        )
-        workflow_guide.setObjectName("infoBox")
-        workflow_guide.setWordWrap(True)
-        draw_layout.addWidget(workflow_guide)
-        
         # Class selection and management
-        class_group = QGroupBox("Step 2-5: Class Management")
+        class_group = QGroupBox("Class Management")
         class_layout = QVBoxLayout()
         class_layout.setSpacing(8)
         
         # Current class selector
-        class_select_label = QLabel("Current Class:")
+        class_select_label = QLabel("Current Class")
         class_select_label.setObjectName("subHeaderLabel")
         class_layout.addWidget(class_select_label)
         
@@ -1007,12 +975,12 @@ class MainWindow(QMainWindow):
         draw_layout.addWidget(class_group)
         
         # Drawing tools
-        draw_tools_group = QGroupBox("Step 3-8: Drawing Tools")
+        draw_tools_group = QGroupBox("Drawing Tools")
         draw_tools_layout = QVBoxLayout()
         draw_tools_layout.setSpacing(10)
         
         # Brush size
-        brush_size_label = QLabel("Brush Size:")
+        brush_size_label = QLabel("Brush Size")
         brush_size_label.setObjectName("subHeaderLabel")
         draw_tools_layout.addWidget(brush_size_label)
         
