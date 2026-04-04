@@ -6,6 +6,7 @@ Utility functions for the Interactive GrabCut application
 
 import ctypes
 import sys
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
@@ -79,3 +80,32 @@ def enable_windows_dark_title_bar(widget) -> None:
     except Exception:
         # Best effort only: keep app running even if OS/API support is unavailable.
         pass
+
+
+def get_public_dir() -> Path:
+    """Return the directory containing bundled UI assets.
+
+    Handles both source runs and PyInstaller frozen runs.
+    """
+    candidates: list[Path] = []
+
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            base = Path(meipass)
+            candidates.extend([
+                base / "public",
+                base / "src" / "public",
+            ])
+
+    here = Path(__file__).resolve().parent
+    candidates.extend([
+        here / "public",
+        here.parent / "src" / "public",
+    ])
+
+    for path in candidates:
+        if path.exists():
+            return path
+
+    return candidates[0]

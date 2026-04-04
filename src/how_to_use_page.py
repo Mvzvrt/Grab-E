@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from utils import enable_windows_dark_title_bar
+from utils import enable_windows_dark_title_bar, get_public_dir
 
 
 class HowToUsePage(QWidget):
@@ -28,6 +28,7 @@ class HowToUsePage(QWidget):
         super().__init__()
         self.on_back = on_back
         self.back_icon_path = Path(back_icon_path) if back_icon_path else None
+        self.assets_dir = get_public_dir()
         self.setWindowTitle("How to Use - Grab-E")
         self.setMinimumSize(560, 360)
         self._apply_stylesheet()
@@ -644,8 +645,7 @@ class HowToUsePage(QWidget):
         Returns:
             QLabel with scaled image, or None if file not found.
         """
-        src_dir = Path(__file__).parent
-        image_path = src_dir / "public" / filename
+        image_path = self.assets_dir / filename
         
         if not image_path.exists():
             return None
@@ -675,7 +675,7 @@ class HowToUsePage(QWidget):
         row.setContentsMargins(0, 6, 0, 0)
         row.setSpacing(6)
 
-        github_icon_path = Path(__file__).parent / "public" / "github_logo.svg"
+        github_icon_path = self.assets_dir / "github_logo.svg"
         if github_icon_path.exists():
             icon_btn = QPushButton()
             icon_btn.setObjectName("creditsIcon")

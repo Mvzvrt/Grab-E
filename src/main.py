@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 from splash_screen import SplashScreen
-from utils import enable_windows_dark_title_bar
+from utils import enable_windows_dark_title_bar, get_public_dir
 
 
 def main():
@@ -24,7 +24,7 @@ def main():
     app.setOrganizationName("University of the Philippines Tacloban College")
 
     # Prefer logo.svg, then fallback to app-logo.svg.
-    assets_dir = Path(__file__).parent / "public"
+    assets_dir = get_public_dir()
     icon_candidates = [assets_dir / "logo.svg", assets_dir / "app-logo.svg"]
     for icon_path in icon_candidates:
         if icon_path.exists():

@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWi
 
 from how_to_use_page import HowToUsePage
 from main_window import MainWindow
-from utils import enable_windows_dark_title_bar
+from utils import enable_windows_dark_title_bar, get_public_dir
 
 
 class SplashScreen(QWidget):
@@ -24,7 +24,7 @@ class SplashScreen(QWidget):
         self.main_window = None
         self.how_to_use_window = None
         self.hero_logo = None
-        self.assets_dir = Path(__file__).parent / "public"
+        self.assets_dir = get_public_dir()
 
         self.setWindowTitle("Grab-E")
         self.setMinimumSize(560, 360)

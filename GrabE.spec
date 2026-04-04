@@ -8,7 +8,7 @@ datas = [
     ('mgc_core/third_party/sed/model.yml.gz', 'mgc_core/third_party/sed'),
     ('diagram', 'diagram'),
     # Bundle all UI assets (icons, splash artwork, and how-to screenshots).
-    ('src/public', 'src/public'),
+    ('src/public', 'public'),
     # Include root-level Python modules needed by src
     ('color_space.py', '.'),
     ('mgc_api.py', '.'),
