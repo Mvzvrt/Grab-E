@@ -54,25 +54,46 @@ class HowToUsePage(QWidget):
                 color: #a9a9a9;
             }
             QLabel#h1 {
-                font-size: 40px;
+                font-size: 38px;
                 font-weight: 700;
                 color: #ffffff;
-                margin-top: 12px;
-                margin-bottom: 18px;
+                margin-top: 8px;
+                margin-bottom: 10px;
             }
             QLabel#h2 {
                 font-size: 25px;
                 font-weight: 600;
                 color: #ffffff;
-                margin-top: 16px;
+                margin-top: 18px;
                 margin-bottom: 12px;
             }
             QLabel#h3 {
                 font-size: 20px;
                 font-weight: 600;
-                color: #ffffff;
+                color: #e8f0fe;
                 margin-top: 12px;
                 margin-bottom: 8px;
+            }
+            QLabel#guideKicker {
+                font-size: 12px;
+                font-weight: 700;
+                color: #8ab4f8;
+                letter-spacing: 1px;
+                text-transform: uppercase;
+            }
+            QLabel#leadText {
+                font-size: 16px;
+                color: #e1e3e6;
+                line-height: 1.5;
+                margin-bottom: 6px;
+            }
+            QLabel#metaChip {
+                font-size: 12px;
+                color: #d2e3fc;
+                background-color: #1f2a37;
+                border: 1px solid #334155;
+                border-radius: 12px;
+                padding: 4px 10px;
             }
             QFrame#tocCard {
                 background-color: transparent;
@@ -122,6 +143,21 @@ class HowToUsePage(QWidget):
                 line-height: 1.5;
                 margin-bottom: 16px;
             }
+            QFrame#calloutCard {
+                background-color: #1f1f1f;
+                border: 1px solid #2f3640;
+                border-radius: 10px;
+            }
+            QLabel#calloutTitle {
+                font-size: 14px;
+                font-weight: 700;
+                color: #ffffff;
+            }
+            QLabel#calloutBody {
+                font-size: 14px;
+                color: #d0d0d0;
+                line-height: 1.5;
+            }
             QPushButton#backButton {
                 border: 1px solid #3e3e42;
                 border-radius: 6px;
@@ -157,6 +193,17 @@ class HowToUsePage(QWidget):
                 font-size: 14px;
                 color: #d0d0d0;
                 line-height: 1.4;
+            }
+            QLabel#imageLabel {
+                background-color: #252526;
+                border: 1px solid #3e3e42;
+                border-radius: 8px;
+                padding: 6px;
+            }
+            QFrame#sectionDivider {
+                background-color: #2e2e2e;
+                min-height: 1px;
+                max-height: 1px;
             }
             QScrollArea {
                 border: none;
@@ -201,6 +248,45 @@ class HowToUsePage(QWidget):
         h1_title.setObjectName("h1")
         h1_title.setAlignment(Qt.AlignLeft)
         self.h1_title = h1_title
+
+        guide_kicker = QLabel("Product guide")
+        guide_kicker.setObjectName("guideKicker")
+
+        lead_text = QLabel(
+            "Follow this step-by-step guide to load an image, create classes, draw scribbles, "
+            "run segmentation, and save results with confidence."
+        )
+        lead_text.setObjectName("leadText")
+        lead_text.setWordWrap(True)
+
+        meta_row = QHBoxLayout()
+        meta_row.setContentsMargins(0, 0, 0, 0)
+        meta_row.setSpacing(8)
+        eta_chip = QLabel("Estimated time: 5-10 min")
+        eta_chip.setObjectName("metaChip")
+        audience_chip = QLabel("Audience: New users")
+        audience_chip.setObjectName("metaChip")
+        meta_row.addWidget(eta_chip)
+        meta_row.addWidget(audience_chip)
+        meta_row.addStretch()
+
+        callout_card = QFrame()
+        callout_card.setObjectName("calloutCard")
+        callout_layout = QVBoxLayout(callout_card)
+        callout_layout.setContentsMargins(12, 10, 12, 10)
+        callout_layout.setSpacing(4)
+
+        callout_title = QLabel("Before you begin")
+        callout_title.setObjectName("calloutTitle")
+        callout_body = QLabel(
+            "Prepare a sample image and decide class labels first. This reduces rework while drawing "
+            "scribbles and helps keep segmentation consistent across runs."
+        )
+        callout_body.setObjectName("calloutBody")
+        callout_body.setWordWrap(True)
+
+        callout_layout.addWidget(callout_title)
+        callout_layout.addWidget(callout_body)
 
         # Scrollable content area
         scroll_area = QScrollArea()
@@ -408,13 +494,23 @@ class HowToUsePage(QWidget):
             toc_btn.clicked.connect(lambda _checked=False, key=section_key: self._handle_toc_link(key))
             toc_layout.addWidget(toc_btn, alignment=Qt.AlignLeft)
 
+        content_layout.addWidget(toc_card)
+        content_layout.addWidget(guide_kicker)
+        content_layout.addWidget(h1_title)
+        content_layout.addWidget(lead_text)
+        content_layout.addLayout(meta_row)
+        content_layout.addWidget(callout_card)
+        content_layout.addSpacing(16)
+
         content_layout.addWidget(h2_open_image)
         content_layout.addWidget(body_text)
         content_layout.addWidget(image_widget)
         content_layout.addSpacing(24)
         content_layout.addWidget(body_text_2)
         content_layout.addWidget(image_widget_2)
-        content_layout.addSpacing(48)
+        content_layout.addSpacing(30)
+        content_layout.addWidget(self._create_section_divider())
+        content_layout.addSpacing(20)
         content_layout.addWidget(add_new_classes)
         content_layout.addWidget(anc_body)
         content_layout.addWidget(anc_image_widget_1)
@@ -433,7 +529,9 @@ class HowToUsePage(QWidget):
         content_layout.addSpacing(24)
         content_layout.addWidget(anc_body_6)
         content_layout.addWidget(anc_image_widget_6)
-        content_layout.addSpacing(48)
+        content_layout.addSpacing(30)
+        content_layout.addWidget(self._create_section_divider())
+        content_layout.addSpacing(20)
         content_layout.addWidget(drawing_scribbles)
         content_layout.addWidget(ds_body)
         content_layout.addWidget(ds_image_widget_1)
@@ -452,6 +550,9 @@ class HowToUsePage(QWidget):
         content_layout.addSpacing(24)
         content_layout.addWidget(ds_body_6)
         content_layout.addWidget(ds_image_widget_6)
+        content_layout.addSpacing(30)
+        content_layout.addWidget(self._create_section_divider())
+        content_layout.addSpacing(20)
         content_layout.addWidget(run_segmentation)
         content_layout.addWidget(rs_body)
         content_layout.addWidget(rs_image_widget_1)
@@ -466,6 +567,7 @@ class HowToUsePage(QWidget):
         content_layout.addSpacing(24)
         content_layout.addWidget(em_body_2)
         content_layout.addWidget(em_image_widget_2)
+        content_layout.addSpacing(24)
         content_layout.addWidget(scsm_body_2)
         content_layout.addWidget(scsm_image_widget_2)
         content_layout.addSpacing(24)
@@ -477,7 +579,9 @@ class HowToUsePage(QWidget):
         content_layout.addSpacing(24)
         content_layout.addWidget(rs_body_3)
         content_layout.addWidget(rs_image_widget_3)
-        content_layout.addSpacing(48)
+        content_layout.addSpacing(30)
+        content_layout.addWidget(self._create_section_divider())
+        content_layout.addSpacing(20)
         content_layout.addWidget(file_saving)
         content_layout.addWidget(fs_body)
         content_layout.addWidget(fs_image_widget)
@@ -492,9 +596,7 @@ class HowToUsePage(QWidget):
         scroll_area.setWidget(content)
 
         root_layout.addLayout(top_row)
-        root_layout.addWidget(toc_card)
-        root_layout.addWidget(h1_title)
-        root_layout.addWidget(scroll_area)
+        root_layout.addWidget(scroll_area, 1)
 
     def _handle_toc_link(self, key: str):
         """Scroll the help content to the requested section from the TOC."""
@@ -543,7 +645,14 @@ class HowToUsePage(QWidget):
         scaled_pixmap = pixmap.scaledToWidth(target_width, Qt.SmoothTransformation)
         
         image_label = QLabel()
+        image_label.setObjectName("imageLabel")
         image_label.setPixmap(scaled_pixmap)
         image_label.setAlignment(Qt.AlignCenter | Qt.AlignHCenter)
         
         return image_label
+
+    def _create_section_divider(self) -> QFrame:
+        """Create a subtle divider between major step groups."""
+        divider = QFrame()
+        divider.setObjectName("sectionDivider")
+        return divider
