@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 from splash_screen import SplashScreen
+from utils import enable_windows_dark_title_bar
 
 
 def main():
@@ -35,6 +36,8 @@ def main():
     # Create and show splash screen
     window = SplashScreen()
     window.setWindowIcon(app.windowIcon())
+    window.winId()
+    enable_windows_dark_title_bar(window)
     window.showMaximized()
     
     # Run event loop

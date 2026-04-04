@@ -7,6 +7,8 @@ import os
 datas = [
     ('mgc_core/third_party/sed/model.yml.gz', 'mgc_core/third_party/sed'),
     ('diagram', 'diagram'),
+    # Bundle all UI assets (icons, splash artwork, and how-to screenshots).
+    ('src/public', 'src/public'),
     # Include root-level Python modules needed by src
     ('color_space.py', '.'),
     ('mgc_api.py', '.'),
@@ -73,7 +75,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,  # Set to False for windowed mode (no console)
+    console=False,  # Set to False for windowed mode (no console)
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

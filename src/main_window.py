@@ -33,7 +33,7 @@ from grabcut_refine_api import (
     EnsembleSegmentationSession,
     segment_all_classes_ensemble
 )
-from utils import voc_palette
+from utils import enable_windows_dark_title_bar, voc_palette
 
 # Import from parent directory
 import sys
@@ -225,6 +225,9 @@ class MainWindow(QMainWindow):
         self._initialize_default_classes()
         
         self._update_ui_state()
+
+        self.winId()
+        enable_windows_dark_title_bar(self)
         
         # Start maximized after all UI is constructed
         self.showMaximized()
@@ -1007,12 +1010,12 @@ class MainWindow(QMainWindow):
         clear_scribbles_btn.setToolTip("Remove all drawn scribbles")
         draw_tools_layout.addWidget(clear_scribbles_btn)
         
-        # Metrics mode toggle
-        self.metrics_checkbox = QCheckBox("Enable Metrics Mode")
-        self.metrics_checkbox.setChecked(False)
-        self.metrics_checkbox.toggled.connect(self._on_metrics_toggled)
-        self.metrics_checkbox.setToolTip("Track processing time and peak RAM for each segment/refine operation")
-        draw_tools_layout.addWidget(self.metrics_checkbox)
+        # Metrics mode toggle (hidden for now)
+        # self.metrics_checkbox = QCheckBox("Enable Metrics Mode")
+        # self.metrics_checkbox.setChecked(False)
+        # self.metrics_checkbox.toggled.connect(self._on_metrics_toggled)
+        # self.metrics_checkbox.setToolTip("Track processing time and peak RAM for each segment/refine operation")
+        # draw_tools_layout.addWidget(self.metrics_checkbox)
         
         # View metrics button
         self.view_metrics_btn = QPushButton("View Metrics")
@@ -1182,7 +1185,7 @@ class MainWindow(QMainWindow):
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setMinimum(0)
         self.opacity_slider.setMaximum(100)
-        self.opacity_slider.setValue(75)
+        self.opacity_slider.setValue(50)
         self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
         opacity_layout.addWidget(self.opacity_slider)
         
@@ -1872,7 +1875,7 @@ class MainWindow(QMainWindow):
         class_id, ok = QInputDialog.getInt(
             self,
             "Add New Class - Step 2/3",
-            f"Enter class label index (2-50):\n\nUsed IDs: {used_ids_str}\n\nNote: Class ID 2 = Label 1, ID 3 = Label 2, etc.",
+            f"Choose class ID (2-50).\n\nUsed IDs: {used_ids_str}\nOutput mask label = class ID - 1.",
             suggested_id,  # value
             2,             # minValue
             50,            # maxValue
