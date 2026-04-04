@@ -4,8 +4,9 @@
 """How-to-use template page for Grab-E."""
 
 from pathlib import Path
+from datetime import date
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
@@ -142,6 +143,16 @@ class HowToUsePage(QWidget):
                 color: #d0d0d0;
                 line-height: 1.5;
                 margin-bottom: 16px;
+            }
+            QLabel#creditsText {
+                font-size: 12px;
+                color: #9aa0a6;
+            }
+            QPushButton#creditsIcon {
+                border: none;
+                background: transparent;
+                padding: 0px;
+                margin: 0px;
             }
             QFrame#calloutCard {
                 background-color: #1f1f1f;
@@ -597,6 +608,7 @@ class HowToUsePage(QWidget):
 
         root_layout.addLayout(top_row)
         root_layout.addWidget(scroll_area, 1)
+        root_layout.addLayout(self._create_credits_row())
 
     def _handle_toc_link(self, key: str):
         """Scroll the help content to the requested section from the TOC."""
@@ -656,3 +668,27 @@ class HowToUsePage(QWidget):
         divider = QFrame()
         divider.setObjectName("sectionDivider")
         return divider
+
+    def _create_credits_row(self) -> QHBoxLayout:
+        """Create a muted credits footer with optional GitHub icon."""
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 6, 0, 0)
+        row.setSpacing(6)
+
+        github_icon_path = Path(__file__).parent / "public" / "github_logo.svg"
+        if github_icon_path.exists():
+            icon_btn = QPushButton()
+            icon_btn.setObjectName("creditsIcon")
+            icon_btn.setFlat(True)
+            icon_btn.setFocusPolicy(Qt.NoFocus)
+            icon_btn.setFixedSize(16, 16)
+            icon_btn.setIcon(QIcon(str(github_icon_path)))
+            icon_btn.setIconSize(QSize(14, 14))
+            icon_btn.setEnabled(False)
+            row.addWidget(icon_btn, alignment=Qt.AlignVCenter)
+
+        credits = QLabel(f"© {date.today().year} Mzvzvrt. All rights reserved.")
+        credits.setObjectName("creditsText")
+        row.addWidget(credits, alignment=Qt.AlignVCenter)
+        row.addStretch()
+        return row
