@@ -85,23 +85,3 @@ If you want an EXE and `dist/` is empty:
 python -m PyInstaller GrabE.spec
 # resulting executable(s) appear in `dist/`
 ```
-
-## Notes & caveats
-
-- Use the same Python minor version as any prebuilt `.pyd` included in `mgc_core` — mismatched Python/ABI will cause import failures.
-- `opencv-contrib-python` (listed in `requirements.txt`) provides `cv.ximgproc` on supported wheels; if no wheel exists for the target platform, you must build OpenCV+contrib from source.
-- Large data files under `cs/` or `diagram/` are not included by default — copy them if required for experiments or demos.
-- For offline usage on machines without internet, include the compiled `.pyd` and the `dist/` EXE(s) to avoid rebuilding and downloading packages.
-
-## Troubleshooting (short)
-
-- ImportError for `mgc_core.fastgeo` — the `.pyd` is missing or built for a different Python; either include matching `.pyd` or build from source.
-- `cv.ximgproc` missing — install `opencv-contrib-python` or build OpenCV with contrib modules.
-- Permission errors running scripts — ensure the venv is activated and PowerShell execution policy allows running scripts.
-
----
-
-If you want, I can also:
-
-- Add an automated `setup.ps1` that creates the venv, installs dependencies, and attempts to build `mgc_core` if needed.
-- Remove the original `README.txt` and replace it with this file.
