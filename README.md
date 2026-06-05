@@ -1,87 +1,137 @@
-# Grab-E — Build & Run
+# Grab-E
 
-This document lists the steps to build and run the project from the USB image containing the selected files.
+<p align="center">
+  <img src="src/public/splash-screen-logo.svg" alt="Grab-E logo" width="220" />
+</p>
 
-**Disclaimer:** This repository includes both the backend processing (batch GrabCut and core native extensions) and the frontend GUI (PySide6 application), which are integrated together as a desktop based application.
+<p align="center">
+  <strong>An interactive segmentation tool using a multi-color-space ensemble GrabCut workflow.</strong>
+</p>
 
-## Contents expected on USB
+<p align="center">
+  <a href="https://www.python.org/">
+    <img src="https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white" alt="Python 3.13" />
+  </a>
+  <a href="https://doc.qt.io/qtforpython/">
+    <img src="https://img.shields.io/badge/PySide6-Qt_Desktop-41CD52?logo=qt&logoColor=white" alt="PySide6" />
+  </a>
+  <a href="https://opencv.org/">
+    <img src="https://img.shields.io/badge/OpenCV-GrabCut-5C3EE8?logo=opencv&logoColor=white" alt="OpenCV" />
+  </a>
+  <a href="https://pyinstaller.org/">
+    <img src="https://img.shields.io/badge/PyInstaller-Packaging-3776AB?logo=pyinstaller&logoColor=white" alt="PyInstaller" />
+  </a>
+</p>
 
-- `dist/`
-- `mgc_core/`
-- `scripts/`
-- `src/`
-- `color_space.py`
-- `grabcut.py`
-- `GrabE.spec`
-- `io_utils.py`
-- `mgc_api.py`
-- `requirements.txt`
+## Overview
 
-## Prerequisites
+Grab-E is a desktop image segmentation application built around scribble-guided GrabCut refinement. It lets you mark foreground and background regions, runs segmentation in the GUI, and also supports batch processing from the command line.
 
-- Windows x64, Python 3.13 (or the same Python minor used to build any included `.pyd`)
-- Visual C++ Build Tools (only required to compile native extensions)
+The project combines:
 
-> Note: The steps below assume you will run commands from the repository root on the USB drive.
+- An interactive PySide6 desktop UI
+- Multi-class scribble-based segmentation
+- Multi-color-space ensemble processing
+- Batch GrabCut tooling for offline runs
+- PyInstaller packaging for a redistributable executable
 
-## Quick setup
+## Features
 
-1. Create and activate a virtual environment:
+- Load an image and draw segmentation scribbles directly in the app
+- Refine masks iteratively without starting over
+- Run segmentation across multiple color spaces for stronger results
+- Export segmentation outputs for downstream use
+- Process images in batch mode from the command line
+- Build a standalone Windows executable with PyInstaller
+
+## Project Branding
+
+The repository includes app assets under `src/public/`, including:
+
+- `src/public/splash-screen-logo.svg`
+- `src/public/how_to_use_logo.svg`
+- `src/public/github_logo.svg`
+- `src/public/start_with_new_image_logo.svg`
+
+These assets are used by the application UI and can also be reused when extending the documentation or product pages.
+
+## Requirements
+
+- Windows x64
+- Python 3.13, or the same Python minor version used to build any included native extension
+- Visual C++ Build Tools if you need to compile `mgc_core`
+
+## Installation
+
+The recommended setup is a virtual environment plus `pip`.
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-```
-
-2. Install Python dependencies:
-
-```powershell
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-## Native extension (`mgc_core`) guidance
-
-- If `mgc_core` already contains a matching compiled extension (for example a `*.pyd` built for Python 3.13/Win64), you do not need to build anything.
-- If a compiled binary is not present or the target Python/OS differs, build the extension:
-
-```powershell
-cd mgc_core
-python -m pip install --upgrade build setuptools wheel pybind11 Cython
-python setup.py build_ext --inplace
-```
-
-You must have Visual C++ Build Tools installed for compilation on Windows.
-
-## Model file
-
-Ensure the structured edge model is present:
-
-```
-mgc_core/third_party/sed/model.yml.gz
-```
+If you prefer, `src/run.bat` and `src/run.sh` provide launcher scripts for local use.
 
 ## Run the GUI
 
-From the repository root (with the venv activated):
+From the repository root:
 
 ```powershell
 python src\main.py
 ```
 
-## Run batch GrabCut
+On Windows, you can also start the app from `src\run.bat`.
 
-Example command:
+## Batch Processing
+
+The repository also includes a batch GrabCut CLI.
 
 ```powershell
 python grabcut.py --images_dir PATH_TO_IMAGES --anns_dir PATH_TO_ANNOTATIONS --output_dir PATH_TO_OUTPUT
 ```
 
-## Build redistributable (PyInstaller)
+Optional batch controls include:
 
-If you want an EXE and `dist/` is empty:
+- `--num_images` to limit how many images are processed
+- `--start_one` to choose the first 1-based item to process
+- `--color_space` to select the feature space
+- `--enable_majority_vote` to enable ensemble voting over a trio of color spaces
+
+## Build a Redistributable
+
+To generate a packaged executable:
 
 ```powershell
 python -m PyInstaller GrabE.spec
-# resulting executable(s) appear in `dist/`
 ```
+
+The build output is written to `dist/`.
+
+## Repository Layout
+
+```text
+color_space.py        Color-space conversion utilities
+grabcut.py            Batch GrabCut command-line entry point
+GrabE.spec            PyInstaller build spec
+io_utils.py           Image and annotation helpers
+mgc_api.py            Multi-color-space GrabCut API surface
+mgc_core/             Native core and structured edge support
+scripts/              Automation scripts for experiments and builds
+src/                  PySide6 GUI application
+```
+
+## Setup Notes
+
+The file `setup.md` contains the fuller step-by-step setup and build guide. Use it if you need the native extension build path, dependency notes, or the exact packaging workflow.
+
+## Attribution
+
+Grab-E is configured in the application metadata with the organization name `University of the Philippines Tacloban College`.
+
+If you add a formal author or project page later, place it here along with a citation, lab, or institutional acknowledgment section.
+
+## License
+
+No license has been selected yet. Add one before distributing the project publicly.
