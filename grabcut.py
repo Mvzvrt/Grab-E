@@ -351,10 +351,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="Directory for output indexed PNG masks.")
 
     # Slicing and batch control
-    ap.add_argument("--num_images", type=int, default=0,
-                    help="Number of images to process. 0 means all.")
-    ap.add_argument("--start_one", type=int, default=1,
-                    help="1-based index of first file to process.")
+    ap.add_argument(
+        "--num_images",
+        type=int,
+        default=0,
+        help=(
+            "Maximum number of images to process from the annotations directory. "
+            "Use 0 (default) to process all available files. Helpful for quick "
+            "sanity checks or partial reruns."
+        ),
+    )
+    ap.add_argument(
+        "--start_one",
+        type=int,
+        default=1,
+        help=(
+            "1-based index of the first annotation file to process. "
+            "Use this to resume or split a large dataset (example: "
+            "--start_one 101 starts at the 101st file)."
+        ),
+    )
 
     # Color space and ensemble settings
     ap.add_argument(
@@ -362,26 +378,48 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=str,
         default="rgb",
         choices=_COLOR_SPACE_CHOICES,
-        help="Color space for feature extraction. Default: rgb.",
+        help=(
+            "Color space to use for feature extraction in single-space mode. "
+            "Ignored when the ensemble is enabled. See color_space.py for the "
+            "full list of supported spaces. Default: rgb."
+        ),
     )
 
+    # Ensemble mode is the recommended default for batch processing. Keep the
+    # flag available for clarity; the default value keeps the ensemble enabled.
     ap.add_argument(
         "--enable_majority_vote",
         action="store_true",
-        help="Enable ensemble over a trio of color spaces (parallelized).",
+        default=True,
+        help=(
+            "Enable the multi-color-space majority-vote ensemble pipeline. "
+            "When enabled, three independent GrabCut branches (one per color "
+            "space) are run in parallel and fused by majority vote. This is the "
+            "recommended and default mode for batch processing."
+        ),
     )
     ap.add_argument(
         "--ensemble_trio",
         type=str,
         default="ruderman_lab,jzazbz,oklch",
-        help="Comma-separated trio for majority voting.",
+        help=(
+            "Comma-separated list of three color space names to use for majority "
+            "voting (order affects tie preference). The trio must contain exactly "
+            "three entries. Default: ruderman_lab,jzazbz,oklch (empirically "
+            "best-performing trio from our brute-force sweep)."
+        ),
     )
 
     # Execution control
     ap.add_argument(
         "--parallel",
         action="store_true",
-        help="Enable batch parallel processing (single color space mode only).",
+        help=(
+            "Enable process-level parallel batch processing (only applies in "
+            "single color-space mode). This flag is ignored when the ensemble "
+            "is enabled because the ensemble already parallelizes across the "
+            "three color-space branches."
+        ),
     )
 
     return ap.parse_args(argv)

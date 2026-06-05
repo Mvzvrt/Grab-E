@@ -28,8 +28,6 @@ This document lists the steps to build and run the project from the USB image co
 - Windows x64, Python 3.13 (or the same Python minor used to build any included `.pyd`)
 - Visual C++ Build Tools (only required to compile native extensions)
 
-> Note: The steps below assume you will run commands from the repository root on the USB drive.
-
 ## Quick setup (Both: Frontend + Backend)
 
 1. Create and activate a virtual environment:
