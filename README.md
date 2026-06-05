@@ -176,4 +176,4 @@ Grab-E is a product from the partial fulfillment of the requirements for the deg
 
 ## License
 
-No license has been selected yet. Add one before distributing the project publicly.
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
