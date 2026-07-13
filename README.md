@@ -61,7 +61,8 @@ These assets are used by the application UI and can also be reused when extendin
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1 # Windows
+source .venv/bin/activate # Linus
 ```
 
 2. Install Python dependencies:
