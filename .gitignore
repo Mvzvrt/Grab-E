@@ -1,4 +1,4 @@
-.gc
+.venv
 __pycache__/
 mgc_core/build/
 masks/
