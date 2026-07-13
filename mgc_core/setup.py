@@ -4,10 +4,13 @@ from setuptools.command.build_ext import build_ext
 import sys
 import sysconfig
 
+
 class get_pybind_include(object):
+
     def __str__(self):
         import pybind11
         return pybind11.get_include()
+
 
 extra_compile_args = []
 if sys.platform.startswith("win"):
@@ -17,7 +20,7 @@ else:
 
 ext_modules = [
     Extension(
-        "fastgeo",
+        "mgc_core.fastgeo",
         sources=["fastgeo_core.cpp"],
         include_dirs=[get_pybind_include()],
         language="c++",
@@ -25,8 +28,10 @@ ext_modules = [
     )
 ]
 
+
 class BuildExt(build_ext):
     c_opts = {}
+
     def build_extensions(self):
         ct = self.compiler.compiler_type
         for ext in self.extensions:
@@ -34,11 +39,13 @@ class BuildExt(build_ext):
                 ext.extra_compile_args = ["/O2", "/DNDEBUG"]
             self.build_extension(ext)
 
+
 setup(
     name="fastgeo",
     version="0.1.0",
     author="you",
-    description="Fast geodesic distance using Djikstra's algorithm with edge costs",
+    description=
+    "Fast geodesic distance using Djikstra's algorithm with edge costs",
     ext_modules=ext_modules,
     cmdclass={"build_ext": BuildExt},
     zip_safe=False,

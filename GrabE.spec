@@ -12,7 +12,7 @@ datas = [
     # Include root-level Python modules needed by src
     ('color_space.py', '.'),
     ('mgc_api.py', '.'),
-    ('grabcut.py', '.'),
+    ('batch.py', '.'),
     ('io_utils.py', '.'),
 ]
 
